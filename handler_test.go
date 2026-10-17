@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/slogtest"
+	"time"
 
 	sloglambda "github.com/angryboat/slog-lambda"
 	"github.com/aws/aws-lambda-go/lambdacontext"
@@ -33,7 +34,7 @@ func TestHandler(t *testing.T) {
 
 			result := func(t *testing.T) map[string]any {
 				result := make(map[string]any)
-				json.Unmarshal(buffer.Bytes(), &result)
+				require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
 				return result
 			}
 
@@ -110,6 +111,121 @@ func TestHandler(t *testing.T) {
 			})
 		}
 		wg.Wait()
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		tests := []struct {
+			env      string
+			enabled  slog.Level
+			disabled slog.Level
+			output   string
+		}{
+			{"TRACE", slog.LevelDebug - 4, slog.LevelDebug - 5, "TRACE"},
+			{"DEBUG", slog.LevelDebug, slog.LevelDebug - 1, "DEBUG"},
+			{"INFO", slog.LevelInfo, slog.LevelDebug, "INFO"},
+			{"WARN", slog.LevelWarn, slog.LevelInfo, "WARN"},
+			{"ERROR", slog.LevelError, slog.LevelWarn, "ERROR"},
+			{"FATAL", slog.LevelError + 4, slog.LevelError + 3, "FATAL"},
+			{"bogus", slog.LevelInfo, slog.LevelDebug, "INFO"},
+			{"", slog.LevelInfo, slog.LevelDebug, "INFO"},
+		}
+
+		for _, tt := range tests {
+			t.Run("AWS_LAMBDA_LOG_LEVEL="+tt.env, func(t *testing.T) {
+				t.Setenv("AWS_LAMBDA_LOG_LEVEL", tt.env)
+
+				buffer := new(bytes.Buffer)
+				handler := sloglambda.NewHandler(buffer, sloglambda.WithJSON())
+				logger := slog.New(handler)
+
+				assert.True(t, handler.Enabled(t.Context(), tt.enabled))
+				assert.False(t, handler.Enabled(t.Context(), tt.disabled))
+
+				logger.Log(t.Context(), tt.disabled, "dropped")
+				logger.Log(t.Context(), tt.enabled, "kept")
+
+				var result map[string]any
+				require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
+				assert.Equal(t, tt.output, result["level"])
+				assert.Equal(t, "kept", result["msg"])
+			})
+		}
+
+		t.Run("WithLevel drops records below threshold", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithLevel(slog.LevelWarn)))
+
+			logger.Info("dropped")
+			logger.Warn("kept")
+
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
+			assert.Equal(t, "kept", result["msg"])
+		})
+
+		t.Run("WithLevel overrides env", func(t *testing.T) {
+			t.Setenv("AWS_LAMBDA_LOG_LEVEL", "ERROR")
+
+			handler := sloglambda.NewHandler(io.Discard, sloglambda.WithLevel(slog.LevelDebug))
+
+			assert.True(t, handler.Enabled(t.Context(), slog.LevelDebug))
+		})
+
+		t.Run("WithLevel tracks a LevelVar", func(t *testing.T) {
+			level := new(slog.LevelVar)
+			handler := sloglambda.NewHandler(io.Discard, sloglambda.WithLevel(level))
+
+			assert.True(t, handler.Enabled(t.Context(), slog.LevelInfo))
+
+			level.Set(slog.LevelError)
+
+			assert.False(t, handler.Enabled(t.Context(), slog.LevelInfo))
+			assert.False(t, handler.WithGroup("g").Enabled(t.Context(), slog.LevelInfo))
+		})
+	})
+
+	t.Run("concurrent writes", func(t *testing.T) {
+		const goroutines = 50
+		const perGoroutine = 20
+
+		for _, format := range []struct {
+			name   string
+			option sloglambda.Option
+			check  func(testing.TB, string)
+		}{
+			{"JSON", sloglambda.WithJSON(), func(t testing.TB, line string) {
+				var result map[string]any
+				require.NoError(t, json.Unmarshal([]byte(line), &result), line)
+				assert.Equal(t, "concurrent", result["msg"])
+			}},
+			{"Text", sloglambda.WithText(), func(t testing.TB, line string) {
+				assert.True(t, strings.HasPrefix(line, `g.j=`), line)
+				assert.Contains(t, line, ` level="INFO" msg="concurrent" `)
+				assert.True(t, strings.HasSuffix(line, ` type="app.log"`), line)
+			}},
+		} {
+			t.Run(format.name, func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				root := slog.New(sloglambda.NewHandler(buffer, format.option, sloglambda.WithoutTime()))
+
+				var wg sync.WaitGroup
+				for i := range goroutines {
+					logger := root.With("goroutine", i).WithGroup("g")
+					wg.Go(func() {
+						for j := range perGoroutine {
+							logger.Info("concurrent", "j", j, "pad", strings.Repeat("x", 256))
+						}
+					})
+				}
+				wg.Wait()
+
+				lines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+				require.Len(t, lines, goroutines*perGoroutine)
+				for _, line := range lines {
+					format.check(t, line)
+				}
+			})
+		}
 	})
 
 	t.Run("WithoutTime", func(t *testing.T) {
@@ -438,15 +554,59 @@ func TestHandler(t *testing.T) {
 
 	t.Run("given a value that fails to encode on retry", func(t *testing.T) {
 		buffer := new(bytes.Buffer)
-		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON()))
+		handler := sloglambda.NewHandler(buffer, sloglambda.WithJSON())
 
-		logger.Info("ratio", "r", struct{ F *flakyMarshaler }{new(flakyMarshaler)})
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
+		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
+
+		err := handler.Handle(t.Context(), record)
+
+		require.ErrorContains(t, err, `bad "quoted" value`)
+		assert.Equal(t, 1, strings.Count(buffer.String(), "\n"))
 
 		var result map[string]any
 		require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
 		assert.Equal(t, "ERROR", result["level"])
 		assert.Contains(t, result["msg"], `bad "quoted" value`)
 	})
+
+	t.Run("given a value that fails to encode on retry and a failing writer", func(t *testing.T) {
+		handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
+
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
+		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
+
+		err := handler.Handle(t.Context(), record)
+
+		require.ErrorIs(t, err, errWrite)
+		assert.ErrorContains(t, err, `bad "quoted" value`)
+	})
+
+	t.Run("given a failing writer", func(t *testing.T) {
+		t.Run("JSON", func(t *testing.T) {
+			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
+
+			err := handler.Handle(t.Context(), slog.NewRecord(time.Now(), slog.LevelInfo, "hi", 0))
+
+			assert.ErrorIs(t, err, errWrite)
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithText())
+
+			err := handler.Handle(t.Context(), slog.NewRecord(time.Now(), slog.LevelInfo, "hi", 0))
+
+			assert.ErrorIs(t, err, errWrite)
+		})
+	})
+}
+
+var errWrite = errors.New("write failed")
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errWrite
 }
 
 type flakyMarshaler struct{ calls int }
