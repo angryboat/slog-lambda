@@ -64,21 +64,30 @@ handler := sloglambda.NewHandler(os.Stdout,
 
 ### Options
 
-| Option | Description |
-|---|---|
-| `WithJSON()` | Output in JSON format |
-| `WithText()` | Output in text format |
-| `WithLevel(slog.Leveler)` | Set the minimum log level |
-| `WithSource()` | Include source file, function, and line number |
-| `WithType(string)` | Set the `type` field (default: `"app.log"`) |
-| `WithoutTime()` | Omit the timestamp |
+| Option                    | Description                                    |
+| ------------------------- | ---------------------------------------------- |
+| `WithJSON()`              | Output in JSON format                          |
+| `WithText()`              | Output in text format                          |
+| `WithLevel(slog.Leveler)` | Set the minimum log level                      |
+| `WithSource()`            | Include source file, function, and line number |
+| `WithType(string)`        | Set the `type` field (default: `"app.log"`)    |
+| `WithoutTime()`           | Omit the timestamp                             |
 
 ### Output
 
 When using `WithJSON()`, log records look like:
 
 ```json
-{"level":"INFO","msg":"Lambda Invoked","record":{"functionName":"my-func","version":"$LATEST","requestId":"abc-123"},"type":"app.log"}
+{
+  "level": "INFO",
+  "msg": "Lambda Invoked",
+  "record": {
+    "functionName": "my-func",
+    "version": "$LATEST",
+    "requestId": "abc-123"
+  },
+  "type": "app.log"
+}
 ```
 
 When using `WithText()`:
@@ -91,11 +100,11 @@ level="INFO" msg="Lambda Invoked" record.functionName="my-func" record.version="
 
 The handler maps AWS Lambda log levels to `slog.Level` values:
 
-| Lambda Level | slog Level |
-|---|---|
-| TRACE | `slog.LevelDebug - 4` |
-| DEBUG | `slog.LevelDebug` |
-| INFO | `slog.LevelInfo` (default) |
-| WARN | `slog.LevelWarn` |
-| ERROR | `slog.LevelError` |
-| FATAL | `slog.LevelError + 4` |
+| Lambda Level | slog Level                 |
+| ------------ | -------------------------- |
+| TRACE        | `slog.LevelDebug - 4`      |
+| DEBUG        | `slog.LevelDebug`          |
+| INFO         | `slog.LevelInfo` (default) |
+| WARN         | `slog.LevelWarn`           |
+| ERROR        | `slog.LevelError`          |
+| FATAL        | `slog.LevelError + 4`      |
