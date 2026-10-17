@@ -50,7 +50,7 @@ Key design decisions:
 
 ## CI
 
-- `ci.yml` (push to main, PRs): test and build across Go 1.25/1.26 on ubuntu and windows, coverage to Codecov, gofmt, nilaway
+- `ci.yml` (push to main, PRs): test across Go 1.25/1.26/1.27/stable on ubuntu x64 and arm64, coverage to Codecov, gofmt, nilaway
 - `go.yml` (push to main, PRs, weekly schedule): gosec, govulncheck
 - `release.yml` (manual `workflow_dispatch` with a version input): runs both workflows, deletes all `*_test.go` except `example_test.go`, runs `go mod tidy`, commits, tags, and opens a draft GitHub release. Only `maddiesch` can trigger it
 
