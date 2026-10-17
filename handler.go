@@ -470,7 +470,11 @@ func normalizeAnyValue(val any) any {
 		if err != nil {
 			return err.Error()
 		}
-		return json.RawMessage(b)
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, b); err != nil {
+			return json.RawMessage(b)
+		}
+		return json.RawMessage(compact.Bytes())
 	default:
 		return val
 	}

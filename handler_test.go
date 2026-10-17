@@ -192,6 +192,24 @@ func TestHandler(t *testing.T) {
 
 			assert.Contains(t, buffer.String(), `payload={"a":1}`)
 		})
+
+		t.Run("Text indented", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage("{\n  \"a\": 1\n}"), "next", 2)
+
+			assert.Contains(t, buffer.String(), `next=2 payload={"a":1}`)
+		})
+
+		t.Run("Text nil", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage(nil))
+
+			assert.Contains(t, buffer.String(), `payload=null`)
+		})
 	})
 
 	t.Run("given a typed nil Stringer", func(t *testing.T) {
