@@ -134,8 +134,8 @@ func Test_appendValue(t *testing.T) {
 		{"time", slog.TimeValue(ts), `"2026-10-16T01:02:03.000000004Z"`, `"2026-10-16T01:02:03.000000004Z"`},
 		{"nil", slog.AnyValue(nil), `null`, `<nil>`},
 		{"error", slog.AnyValue(errors.New("boom")), `"boom"`, `"boom"`},
-		{"json.Marshaler", slog.AnyValue(jsonMarshalerSuccess{}), `"JSON Marshal"`, `"JSON Marshal"`},
-		{"indented json.Marshaler", slog.AnyValue(json.RawMessage("{\n  \"a\": 1\n}")), `{"a":1}`, `{"a":1}`},
+		{"json.Marshaler", slog.AnyValue(jsonMarshalerSuccess{}), `"JSON Marshal"`, `"\"JSON Marshal\""`},
+		{"indented json.Marshaler", slog.AnyValue(json.RawMessage("{\n  \"a\": 1\n}")), `{"a":1}`, `"{\"a\":1}"`},
 		{"stringer", slog.AnyValue(stringerValue{}), `{}`, `stringerValue`},
 		{"struct", slog.AnyValue(struct {
 			A string
