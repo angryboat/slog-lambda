@@ -101,6 +101,13 @@ func TestHandler(t *testing.T) {
 		assert.Contains(t, buffer.String(), `"level":"INFO"`)
 	})
 
+	t.Run("empty WithAttrs and WithGroup return the receiver", func(t *testing.T) {
+		handler := sloglambda.NewHandler(new(bytes.Buffer))
+
+		assert.Same(t, handler, handler.WithAttrs(nil))
+		assert.Same(t, handler, handler.WithGroup(""))
+	})
+
 	t.Run("WithLevel nil reused concurrently", func(t *testing.T) {
 		opt := sloglambda.WithLevel(nil)
 
