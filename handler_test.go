@@ -88,6 +88,17 @@ func TestHandler(t *testing.T) {
 		})
 	})
 
+	t.Run("WithLevel nil", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithLevel(nil)))
+
+		logger.Debug("dropped")
+		logger.Info(t.Name())
+
+		assert.NotContains(t, buffer.String(), `"dropped"`)
+		assert.Contains(t, buffer.String(), `"level":"INFO"`)
+	})
+
 	t.Run("WithoutTime", func(t *testing.T) {
 		t.Run("JSON", func(t *testing.T) {
 			buffer := new(bytes.Buffer)
