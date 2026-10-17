@@ -2,12 +2,15 @@ package sloglambda_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	sloglambda "github.com/angryboat/slog-lambda"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValueTypes(t *testing.T) {
@@ -22,12 +25,28 @@ func TestValueTypes(t *testing.T) {
 		logger := slog.New(newHandler(t))
 		req, _ := http.NewRequest("GET", "/foo/bar", nil)
 		logger.InfoContext(t.Context(), t.Name(), slog.Any("request", req))
+		assert.Contains(t, buffer.String(), ` request="&{GET /foo/bar HTTP/1.1 `)
+		assert.True(t, strings.HasSuffix(buffer.String(), ` type="app.log"`+"\n"), buffer.String())
 	})
 
 	t.Run("http.Request in Group", func(t *testing.T) {
 		logger := slog.New(newHandler(t))
 		req, _ := http.NewRequest("GET", "/foo/bar", nil)
 		logger.InfoContext(t.Context(), t.Name(), slog.Group("http", slog.Any("request", req)))
+		assert.True(t, strings.HasPrefix(buffer.String(), `http.request="&{GET /foo/bar HTTP/1.1 `), buffer.String())
+		assert.True(t, strings.HasSuffix(buffer.String(), ` type="app.log"`+"\n"), buffer.String())
+	})
+
+	t.Run("http.Request JSON", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON()))
+		req, _ := http.NewRequest("GET", "/foo/bar", nil)
+		logger.InfoContext(t.Context(), t.Name(), slog.Any("request", req))
+
+		var result map[string]any
+		require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
+		assert.Equal(t, t.Name(), result["msg"])
+		assert.True(t, strings.HasPrefix(result["request"].(string), "!ERROR:"), result["request"])
 	})
 
 	t.Run("LogValuer", func(t *testing.T) {
