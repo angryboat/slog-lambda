@@ -174,6 +174,44 @@ func TestHandler(t *testing.T) {
 		})
 	})
 
+	t.Run("given a json.Marshaler value", func(t *testing.T) {
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON()))
+
+			logger.Info("hi", "payload", json.RawMessage(`{"a":1}`))
+
+			assert.Contains(t, buffer.String(), `"payload":{"a":1}`)
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage(`{"a":1}`))
+
+			assert.Contains(t, buffer.String(), `payload={"a":1}`)
+		})
+
+		t.Run("Text indented", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage("{\n  \"a\": 1\n}"), "next", 2)
+
+			assert.Contains(t, buffer.String(), `next=2 payload={"a":1}`)
+		})
+
+		t.Run("Text nil", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage(nil))
+
+			assert.Contains(t, buffer.String(), `payload=null`)
+		})
+	})
+
 	t.Run("given reserved keys", func(t *testing.T) {
 		ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
 			AwsRequestID: "abc-123",
@@ -289,6 +327,7 @@ func TestHandler(t *testing.T) {
 			{"+Inf", math.Inf(1), "r=+Inf"},
 			{"chan", make(chan int), "r=0x"},
 			{"nested failing marshaler", struct{ F failingMarshaler }{}, "r={"},
+			{"invalid raw JSON", json.RawMessage(`{`), "r={"},
 		}
 
 		for _, tt := range tests {

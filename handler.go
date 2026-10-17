@@ -431,6 +431,8 @@ func writeTextRecord(w io.Writer, record logRecord, path string) {
 			writeTextRecord(w, v, key)
 		case string:
 			w.Write([]byte(strconv.Quote(v)))
+		case json.RawMessage:
+			w.Write(v)
 		default:
 			fmt.Fprintf(w, "%v", v)
 		}
@@ -485,7 +487,11 @@ func normalizeAnyValue(val any) any {
 		if err != nil {
 			return err.Error()
 		}
-		return string(b)
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, b); err != nil {
+			return json.RawMessage(b)
+		}
+		return json.RawMessage(compact.Bytes())
 	default:
 		return val
 	}
