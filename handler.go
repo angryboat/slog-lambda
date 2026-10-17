@@ -6,8 +6,8 @@
 // The handler reserves two top-level keys: "record" (Lambda function name,
 // version, and request ID) and "type" (see [WithType]). When the handler sets
 // one of these and an attr or group uses the same key at the top level, the
-// handler's value wins and the caller's value moves to the key with a
-// trailing underscore ("record_", "type_").
+// handler's value wins and the caller's value moves to the first unused key
+// formed by appending underscores ("record_", "type_", "type__", ...).
 //
 // See https://docs.aws.amazon.com/lambda/latest/dg/monitoring-logs.html
 package sloglambda
@@ -340,7 +340,11 @@ func (r logRecord) append(attr slog.Attr) {
 
 func (r logRecord) reserve(key string, value any) {
 	if existing, ok := r[key]; ok {
-		r[key+"_"] = existing
+		fallback := key + "_"
+		for _, taken := r[fallback]; taken; _, taken = r[fallback] {
+			fallback += "_"
+		}
+		r[fallback] = existing
 	}
 	r[key] = value
 }

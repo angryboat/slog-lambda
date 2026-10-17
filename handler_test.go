@@ -218,6 +218,26 @@ func TestHandler(t *testing.T) {
 			})
 		})
 
+		t.Run("attr type and type_", func(t *testing.T) {
+			t.Run("JSON", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "a", "type_", "b")
+
+				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"b","type__":"a"}`, buffer.String())
+			})
+
+			t.Run("Text", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "a", "type_", "b")
+
+				assert.Contains(t, buffer.String(), `type="app.log" type_="b" type__="a"`)
+			})
+		})
+
 		t.Run("WithAttrs type", func(t *testing.T) {
 			buffer := new(bytes.Buffer)
 			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))

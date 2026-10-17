@@ -96,7 +96,7 @@ When using `WithText()`:
 level="INFO" msg="Lambda Invoked" record.functionName="my-func" record.version="$LATEST" record.requestId="abc-123" type="app.log"
 ```
 
-`record` and `type` are reserved. If your attrs or groups use either key at the top level, the handler's value wins and yours moves to `record_` or `type_`.
+`record` and `type` are reserved. If your attrs or groups use either key at the top level, the handler's value wins and yours moves to the first unused key with underscores appended (`type_`, then `type__`, and so on).
 
 ### Log Levels
 

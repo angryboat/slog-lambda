@@ -37,7 +37,7 @@ Key design decisions:
 - **Text output** - `writeTextRecord` sorts keys and flattens groups into dotted paths (`record.functionName="..."`); strings are quoted with `strconv.Quote`
 - **Buffer pooling** - `sync.Pool` with 1KB initial alloc, 16KB max retention
 - **Lambda metadata** - Injects function name, version from env, and request ID from `lambdacontext` into a `record` group; `type` field (default `app.log`) added at top level
-- **Reserved keys** - `record` and `type` are written after user attrs via `logRecord.reserve`; a colliding top-level user value moves to `record_`/`type_` instead of being dropped
+- **Reserved keys** - `record` and `type` are written after user attrs via `logRecord.reserve`; a colliding top-level user value moves to the first unused `record_`/`type_`/`type__`... key instead of being dropped
 - **Locking** - `mu` is a `*sync.Mutex` shared across `copy()`-derived handlers so all writers to the same `io.Writer` serialize
 
 ## Testing
