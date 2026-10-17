@@ -1,7 +1,7 @@
 # slog-lambda
 
 [![current](https://img.shields.io/github/v/tag/angryboat/slog-lambda.svg)](https://github.com/angryboat/slog-lambda/releases)
-[![codecov](https://codecov.io/gh/angryboat/slog-lambda/graph/badge.svg?token=G27YB5T5J3)](https://codecov.io/gh/angryboat/slog-lambda)
+[![codecov](https://codecov.io/gh/angryboat/slog-lambda/graph/badge.svg?token=m4y4KRMuAu)](https://codecov.io/gh/angryboat/slog-lambda)
 [![Doc](https://godoc.org/github.com/angryboat/slog-lambda?status.svg)](https://pkg.go.dev/github.com/angryboat/slog-lambda)
 [![License](https://img.shields.io/github/license/angryboat/slog-lambda)](./LICENSE)
 
