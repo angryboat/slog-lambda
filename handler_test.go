@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -191,6 +192,17 @@ func TestHandler(t *testing.T) {
 
 			assert.Contains(t, buffer.String(), `payload={"a":1}`)
 		})
+	})
+
+	t.Run("given a typed nil Stringer", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+		require.NotPanics(t, func() {
+			logger.Info(t.Name(), "ip", (*net.IP)(nil))
+		})
+
+		assert.Contains(t, buffer.String(), "ip=<nil>")
 	})
 
 	t.Run("given unencodable values", func(t *testing.T) {

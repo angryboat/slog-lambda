@@ -416,11 +416,6 @@ func writeTextRecord(w io.Writer, record logRecord, path string) {
 			w.Write([]byte(strconv.Quote(v)))
 		case json.RawMessage:
 			w.Write(v)
-		case fmt.Stringer:
-			// This is here because nilaway can't figure out that v is not nil
-			if v != nil {
-				w.Write([]byte(v.String()))
-			}
 		default:
 			fmt.Fprintf(w, "%v", v)
 		}
