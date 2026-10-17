@@ -41,7 +41,7 @@ const (
 	fatalLevelErrorOffset = 4
 )
 
-var (
+const (
 	kLambdaRecord          = "record"
 	kLambdaFunctionName    = "functionName"
 	kLambdaFunctionVersion = "version"
@@ -224,14 +224,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		))
 	}
 
-	gattr := h.gattr
-	if record.NumAttrs() == 0 {
-		for len(gattr) > 0 && gattr[len(gattr)-1].group != "" {
-			gattr = gattr[:len(gattr)-1]
-		}
-	}
-
-	for _, ga := range gattr {
+	for _, ga := range h.gattr {
 		if ga.group == "" {
 			for _, a := range ga.attrs {
 				value.append(a)
@@ -352,10 +345,9 @@ func (r logRecord) reserve(key string, value any) {
 func (r logRecord) clean() {
 	for k, v := range r {
 		if lr, ok := v.(logRecord); ok {
+			lr.clean()
 			if len(lr) == 0 {
 				delete(r, k)
-			} else {
-				lr.clean()
 			}
 		}
 	}

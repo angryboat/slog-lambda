@@ -80,6 +80,15 @@ func Test_logRecord(t *testing.T) {
 			_, ok = foo.(logRecord)["qux"]
 			assert.False(t, ok, "the sub-record should have been removed")
 		})
+
+		t.Run("when the log record has nested empty sub-records", func(t *testing.T) {
+			r := logRecord{
+				"G": logRecord{"H": logRecord{}},
+			}
+			r.clean()
+
+			assert.Empty(t, r)
+		})
 	})
 
 	t.Run("append", func(t *testing.T) {
