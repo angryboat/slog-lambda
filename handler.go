@@ -72,10 +72,10 @@ type Option func(*Handler)
 // Defaults to the value of AWS_LAMBDA_LOG_LEVEL, or INFO if unset. A nil
 // level means INFO, matching [slog.HandlerOptions].
 func WithLevel(level slog.Leveler) Option {
+	if level == nil {
+		level = slog.LevelInfo
+	}
 	return func(h *Handler) {
-		if level == nil {
-			level = slog.LevelInfo
-		}
 		h.level = level
 	}
 }

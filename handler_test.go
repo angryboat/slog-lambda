@@ -11,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/slogtest"
 
@@ -97,6 +98,18 @@ func TestHandler(t *testing.T) {
 
 		assert.NotContains(t, buffer.String(), `"dropped"`)
 		assert.Contains(t, buffer.String(), `"level":"INFO"`)
+	})
+
+	t.Run("WithLevel nil reused concurrently", func(t *testing.T) {
+		opt := sloglambda.WithLevel(nil)
+
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Go(func() {
+				sloglambda.NewHandler(io.Discard, opt)
+			})
+		}
+		wg.Wait()
 	})
 
 	t.Run("WithoutTime", func(t *testing.T) {
