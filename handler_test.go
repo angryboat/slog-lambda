@@ -33,7 +33,7 @@ func TestHandler(t *testing.T) {
 
 			result := func(t *testing.T) map[string]any {
 				result := make(map[string]any)
-				json.Unmarshal(buffer.Bytes(), &result)
+				require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
 				return result
 			}
 
