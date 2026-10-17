@@ -44,6 +44,7 @@ jobs:
       - uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          slug: angryboat/slog-lambda
   code-formatting:
     runs-on: ubuntu-latest
     steps:
