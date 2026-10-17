@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/slogtest"
+	"time"
 
 	sloglambda "github.com/angryboat/slog-lambda"
 	"github.com/aws/aws-lambda-go/lambdacontext"
@@ -553,15 +554,59 @@ func TestHandler(t *testing.T) {
 
 	t.Run("given a value that fails to encode on retry", func(t *testing.T) {
 		buffer := new(bytes.Buffer)
-		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON()))
+		handler := sloglambda.NewHandler(buffer, sloglambda.WithJSON())
 
-		logger.Info("ratio", "r", struct{ F *flakyMarshaler }{new(flakyMarshaler)})
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
+		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
+
+		err := handler.Handle(t.Context(), record)
+
+		require.ErrorContains(t, err, `bad "quoted" value`)
+		assert.Equal(t, 1, strings.Count(buffer.String(), "\n"))
 
 		var result map[string]any
 		require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
 		assert.Equal(t, "ERROR", result["level"])
 		assert.Contains(t, result["msg"], `bad "quoted" value`)
 	})
+
+	t.Run("given a value that fails to encode on retry and a failing writer", func(t *testing.T) {
+		handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
+
+		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
+		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
+
+		err := handler.Handle(t.Context(), record)
+
+		require.ErrorIs(t, err, errWrite)
+		assert.ErrorContains(t, err, `bad "quoted" value`)
+	})
+
+	t.Run("given a failing writer", func(t *testing.T) {
+		t.Run("JSON", func(t *testing.T) {
+			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
+
+			err := handler.Handle(t.Context(), slog.NewRecord(time.Now(), slog.LevelInfo, "hi", 0))
+
+			assert.ErrorIs(t, err, errWrite)
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithText())
+
+			err := handler.Handle(t.Context(), slog.NewRecord(time.Now(), slog.LevelInfo, "hi", 0))
+
+			assert.ErrorIs(t, err, errWrite)
+		})
+	})
+}
+
+var errWrite = errors.New("write failed")
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errWrite
 }
 
 type flakyMarshaler struct{ calls int }
