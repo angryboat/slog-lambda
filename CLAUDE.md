@@ -14,7 +14,7 @@ A Go `slog.Handler` for AWS Lambda functions that auto-configures log format (JS
 - `go test -coverprofile=coverage.txt ./...` - Generate coverage report
 
 ### Benchmarking
-- `make benchmark` - Run `BenchmarkJSON` and `BenchmarkText` for 10 seconds with memory stats
+- `make benchmark` - Run all benchmarks (`BenchmarkJSON`, `BenchmarkText`, `BenchmarkJSONGroups`, `BenchmarkTextGroups`) for 10 seconds with memory stats
 
 ### Code Quality (all enforced in CI)
 - `gofmt -s -l .` - Check formatting (must have zero output)
@@ -30,20 +30,19 @@ Key design decisions:
 - **Functional options pattern** - `Option` type (`func(*Handler)`) for configuration: `WithJSON()`, `WithText()`, `WithLevel()`, `WithSource()`, `WithType()`, `WithFunctionName()`, `WithFunctionVersion()`, `WithoutTime()`
 - **Environment auto-detection** - `NewHandler` reads `AWS_LAMBDA_LOG_LEVEL` and `AWS_LAMBDA_LOG_FORMAT` at construction time; options override env values. Unknown level strings fall back to INFO; anything other than `json` (case-insensitive) is text
 - **Custom level mapping** - TRACE = `slog.LevelDebug - 4`, FATAL = `slog.LevelError + 4`; `lambdaLoggerLevelString` renders these back for output, with `+N`/`-N` suffixes for in-between levels
-- **`WithAttrs`/`WithGroup`** - `copy()` appends a `groupOrAttrs` entry to an immutable chain; empty groups (including nested ones) are removed by `logRecord.clean()` (slogtest requires this)
-- **`logRecord` (map[string]any)** - Internal representation built in `Handle()`, supports nested groups; `clean()` removes empty sub-records before serialization
-- **Value normalization** - `normalizeValue` resolves `slog.LogValuer` and converts typed values (times to RFC3339Nano, durations to strings); `normalizeAnyValue` handles `error` and `json.Marshaler`
-- **JSON encode fallback** - If encoding fails, `replaceUnencodable()` swaps bad values for `!ERROR:<msg>` strings and retries. If that still fails, `writeJSONFallback` emits a minimal ERROR line and returns the joined errors. Never drop a log record
-- **Text output** - `writeTextRecord` sorts keys and flattens groups into dotted paths (`record.functionName="..."`); strings are quoted with `strconv.Quote`
-- **Buffer pooling** - `sync.Pool` with 1KB initial alloc, 16KB max retention
+- **`WithAttrs`/`WithGroup`** - `copy()` appends a `groupOrAttrs` entry to an immutable chain (empty attrs or group name return the receiver, like stdlib); the chain is serialized on every `Handle`
+- **Direct buffer appends** - `handleState` (pooled, 1KB initial buffer, 16KB max retention) appends JSON or text straight into a byte slice, mirroring `slog.JSONHandler`. No intermediate map. Field order is stdlib's: `time`, `level`, `source`, `msg`, then `type`, `record`, then attrs in call order
+- **Empty groups** - `openGroup` returns a `groupMark`; `closeGroup` truncates the buffer back if nothing was written inside (slogtest requires empty groups, including nested ones, to be omitted)
+- **Values** - `appendValue` resolves `slog.LogValuer`, writes times as RFC3339Nano and durations as strings. `error` uses `Error()`, `json.Marshaler` and (in JSON) other `KindAny` values go through a pooled `json.Encoder` with HTML escaping off. Anything unencodable (NaN, channels, failing marshalers) becomes an `!ERROR:<msg>` string in place. Never drop a log record
+- **Text output** - groups flatten into dotted paths (`record.functionName="..."`); keys are quoted only when needed, strings always with `strconv.Quote`
 - **Lambda metadata** - Injects function name and version (read from env once in `NewHandler`, overridable via `WithFunctionName()`/`WithFunctionVersion()`) and request ID from `lambdacontext` into a `record` group; `type` field (default `app.log`) added at top level
-- **Reserved keys** - `record` and `type` are written after user attrs via `logRecord.reserve`; a colliding top-level user value moves to the first unused `record_`/`type_`/`type__`... key instead of being dropped
+- **Reserved keys** - `record` and `type` are written before user attrs; `userKey` renames a colliding top-level user key to the first unused `record_`/`type_`/`type__`... key, scanning top-level user keys lazily only on collision
 - **Locking** - `mu` is a `*sync.Mutex` shared across `copy()`-derived handlers so all writers to the same `io.Writer` serialize
 
 ## Testing
 
-- External tests (`handler_test.go`) use `slogtest.Run` for `slog.Handler` conformance in both JSON and text formats, plus JSON fallback coverage and benchmarks
-- Internal tests (`handler_internal_test.go`) cover unexported helpers: level parsing, level string rendering, `logRecord` operations, text serialization, value normalization
+- External tests (`handler_test.go`) use `slogtest.Run` for `slog.Handler` conformance in both JSON and text formats, plus field order, unencodable values, and benchmarks (`BenchmarkJSONGroups`/`BenchmarkTextGroups` cover nested groups)
+- Internal tests (`handler_internal_test.go`) cover unexported helpers: level parsing, level string rendering, JSON string/float encoding, value rendering, key quoting, group elision
 - `example_test.go` holds runnable `Example*` functions whose `// Output:` comments assert exact log lines; they are kept in release tarballs for pkg.go.dev
 - `main_test.go` sets Lambda env vars (`AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_VERSION`, `AWS_LAMBDA_LOG_FORMAT=JSON`) and runs `goleak.VerifyTestMain` for goroutine leak detection. Example outputs depend on these values
 - `value_test.go` covers `slog.LogValuer` resolution and complex types like `http.Request`
