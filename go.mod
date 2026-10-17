@@ -1,4 +1,4 @@
-module github.com/maddiesch/slog-lambda
+module github.com/angryboat/slog-lambda
 
 go 1.25.0
 

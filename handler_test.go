@@ -14,7 +14,7 @@ import (
 	"testing/slogtest"
 
 	"github.com/aws/aws-lambda-go/lambdacontext"
-	sloglambda "github.com/maddiesch/slog-lambda"
+	sloglambda "github.com/angryboat/slog-lambda"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

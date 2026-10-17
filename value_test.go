@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	sloglambda "github.com/maddiesch/slog-lambda"
+	sloglambda "github.com/angryboat/slog-lambda"
 	"github.com/stretchr/testify/assert"
 )
 

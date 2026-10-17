@@ -1,9 +1,9 @@
 # slog-lambda
 
-[![current](https://img.shields.io/github/v/tag/maddiesch/slog-lambda.svg)](https://github.com/maddiesch/slog-lambda/releases)
-[![codecov](https://codecov.io/gh/maddiesch/slog-lambda/graph/badge.svg?token=G27YB5T5J3)](https://codecov.io/gh/maddiesch/slog-lambda)
-[![Doc](https://godoc.org/github.com/maddiesch/slog-lambda?status.svg)](https://pkg.go.dev/github.com/maddiesch/slog-lambda)
-[![License](https://img.shields.io/github/license/maddiesch/slog-lambda)](./LICENSE)
+[![current](https://img.shields.io/github/v/tag/angryboat/slog-lambda.svg)](https://github.com/angryboat/slog-lambda/releases)
+[![codecov](https://codecov.io/gh/angryboat/slog-lambda/graph/badge.svg?token=G27YB5T5J3)](https://codecov.io/gh/angryboat/slog-lambda)
+[![Doc](https://godoc.org/github.com/angryboat/slog-lambda?status.svg)](https://pkg.go.dev/github.com/angryboat/slog-lambda)
+[![License](https://img.shields.io/github/license/angryboat/slog-lambda)](./LICENSE)
 
 ## AWS Lambda `slog.Handler`
 
@@ -20,7 +20,7 @@ A [`log/slog`](https://pkg.go.dev/log/slog) handler for [AWS Lambda advanced log
 ### Install
 
 ```sh
-go get github.com/maddiesch/slog-lambda
+go get github.com/angryboat/slog-lambda
 ```
 
 ### Usage
@@ -34,7 +34,7 @@ import (
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	sloglambda "github.com/maddiesch/slog-lambda"
+	sloglambda "github.com/angryboat/slog-lambda"
 )
 
 func init() {
