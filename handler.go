@@ -41,7 +41,7 @@ const (
 	fatalLevelErrorOffset = 4
 )
 
-var (
+const (
 	kLambdaRecord          = "record"
 	kLambdaFunctionName    = "functionName"
 	kLambdaFunctionVersion = "version"
