@@ -1,16 +1,16 @@
 package sloglambda
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func Test_loggerLevelFromString(t *testing.T) {
@@ -56,140 +56,6 @@ func Test_lambdaLoggerLevelString(t *testing.T) {
 	}
 }
 
-func Test_logRecord(t *testing.T) {
-	t.Run("clean", func(t *testing.T) {
-		t.Run("when the log record has an empty sub-record", func(t *testing.T) {
-			r := logRecord{
-				"foo": logRecord{},
-			}
-			r.clean()
-
-			_, ok := r["foo"]
-			assert.False(t, ok, "the sub-record should have been removed")
-		})
-
-		t.Run("when the log record has a non-empty sub-record", func(t *testing.T) {
-			r := logRecord{
-				"foo": logRecord{"bar": "baz", "qux": logRecord{}},
-			}
-			r.clean()
-
-			foo, ok := r["foo"]
-			require.True(t, ok, "the sub-record should not have been removed")
-
-			_, ok = foo.(logRecord)["qux"]
-			assert.False(t, ok, "the sub-record should have been removed")
-		})
-
-		t.Run("when the log record has nested empty sub-records", func(t *testing.T) {
-			r := logRecord{
-				"G": logRecord{"H": logRecord{}},
-			}
-			r.clean()
-
-			assert.Empty(t, r)
-		})
-	})
-
-	t.Run("append", func(t *testing.T) {
-		t.Run("when given an empty group", func(t *testing.T) {
-			r := logRecord{}
-			r.append(slog.Group("foo"))
-
-			assert.Equal(t, logRecord{}, r)
-		})
-
-		t.Run("when given a non-empty group without a name", func(t *testing.T) {
-			r := logRecord{}
-			r.append(slog.Group("", slog.String("foo", "bar")))
-
-			assert.Equal(t, logRecord{"foo": "bar"}, r)
-		})
-	})
-}
-
-func Test_writeTextRecord(t *testing.T) {
-	t.Run("when the record is empty", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{}, "")
-
-		assert.Equal(t, "", buffer.String())
-	})
-
-	t.Run("when the record is nil", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, nil, "")
-
-		assert.Equal(t, "", buffer.String())
-	})
-
-	t.Run("when the record contains a stringer", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"foo": stringerValue{}}, "")
-
-		assert.Equal(t, "foo=stringerValue ", buffer.String())
-	})
-
-	t.Run("when the record contains an int", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"foo": 1}, "")
-
-		assert.Equal(t, "foo=1 ", buffer.String())
-	})
-
-	t.Run("when the record contains a string", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"bar": "baz"}, "foo")
-
-		assert.Equal(t, `foo.bar="baz" `, buffer.String())
-	})
-
-	t.Run("when the record contains a sub-record", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"bar": logRecord{"baz": 1}}, "foo")
-
-		assert.Equal(t, `foo.bar.baz=1 `, buffer.String())
-	})
-
-	t.Run("when the record contains raw JSON", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"foo": json.RawMessage(`{"a":1}`)}, "")
-
-		assert.Equal(t, `foo={"a":1} `, buffer.String())
-	})
-
-	t.Run("when the record contains a struct", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"foo": struct {
-			A string
-			B int
-		}{"x y", 1}}, "")
-
-		assert.Equal(t, `foo="{x y 1}" `, buffer.String())
-	})
-
-	t.Run("when a key contains a space", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"a b": 1}, "")
-
-		assert.Equal(t, `"a b"=1 `, buffer.String())
-	})
-
-	t.Run("when a key contains an equals sign", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"a=c": 1}, "")
-
-		assert.Equal(t, `"a=c"=1 `, buffer.String())
-	})
-
-	t.Run("when a nested key needs quoting", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		writeTextRecord(buffer, logRecord{"b c": "d"}, "a")
-
-		assert.Equal(t, `"a.b c"="d" `, buffer.String())
-	})
-}
-
 func Test_textNeedsQuoting(t *testing.T) {
 	cases := map[string]bool{
 		"":           true,
@@ -212,89 +78,166 @@ func Test_textNeedsQuoting(t *testing.T) {
 	}
 }
 
+func Test_appendJSONString(t *testing.T) {
+	cases := map[string]string{
+		"":                         `""`,
+		"plain":                    `"plain"`,
+		`quote " and backslash \`:  `"quote \" and backslash \\"`,
+		"newline\n tab\t return\r": `"newline\n tab\t return\r"`,
+		"control \x00 \x1f \x7f":   "\"control \\u0000 \\u001f \x7f\"",
+		"html <b>&amp;</b>":        `"html <b>&amp;</b>"`,
+		"héllo 世界 🎉":               `"héllo 世界 🎉"`,
+		"sep \u2028 \u2029":        `"sep \u2028 \u2029"`,
+	}
+
+	for input, want := range cases {
+		assert.Equal(t, want, string(appendJSONString(nil, input)), "input %q", input)
+	}
+
+	t.Run("invalid UTF-8", func(t *testing.T) {
+		var got string
+		assert.NoError(t, json.Unmarshal(appendJSONString(nil, "a\xffb\xc3"), &got))
+		assert.Equal(t, "a\ufffdb\ufffd", got)
+	})
+}
+
+func Test_appendJSONFloat(t *testing.T) {
+	inputs := []float64{0, 1, -1, 1.5, 1e-6, 1e-7, 1.23e-9, 1e20, 1e21, -1e21, 1e100, math.MaxFloat64, math.SmallestNonzeroFloat64}
+
+	for _, input := range inputs {
+		want, err := json.Marshal(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		assert.Equal(t, string(want), string(appendJSONFloat(nil, input)), "input %v", input)
+	}
+}
+
+func Test_appendValue(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 1, 2, 3, 4, time.UTC)
+
+	cases := []struct {
+		name  string
+		value slog.Value
+		json  string
+		text  string
+	}{
+		{"string", slog.StringValue("a b"), `"a b"`, `"a b"`},
+		{"int64", slog.Int64Value(-42), `-42`, `-42`},
+		{"uint64", slog.Uint64Value(42), `42`, `42`},
+		{"bool", slog.BoolValue(true), `true`, `true`},
+		{"float64", slog.Float64Value(1.23), `1.23`, `1.23`},
+		{"NaN", slog.Float64Value(math.NaN()), `"!ERROR:json: unsupported value: NaN"`, `NaN`},
+		{"+Inf", slog.Float64Value(math.Inf(1)), `"!ERROR:json: unsupported value: +Inf"`, `+Inf`},
+		{"duration", slog.DurationValue(time.Second), `"1s"`, `"1s"`},
+		{"time", slog.TimeValue(ts), `"2026-10-16T01:02:03.000000004Z"`, `"2026-10-16T01:02:03.000000004Z"`},
+		{"nil", slog.AnyValue(nil), `null`, `<nil>`},
+		{"error", slog.AnyValue(errors.New("boom")), `"boom"`, `"boom"`},
+		{"json.Marshaler", slog.AnyValue(jsonMarshalerSuccess{}), `"JSON Marshal"`, `"JSON Marshal"`},
+		{"indented json.Marshaler", slog.AnyValue(json.RawMessage("{\n  \"a\": 1\n}")), `{"a":1}`, `{"a":1}`},
+		{"stringer", slog.AnyValue(stringerValue{}), `{}`, `stringerValue`},
+		{"struct", slog.AnyValue(struct {
+			A string
+			B int
+		}{"x y", 1}), `{"A":"x y","B":1}`, `"{x y 1}"`},
+		{"html", slog.AnyValue(map[string]string{"a": "<b>"}), `{"a":"<b>"}`, `map[a:<b>]`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, format := range []struct {
+				json bool
+				want string
+			}{{true, tc.json}, {false, tc.text}} {
+				s := &handleState{h: &Handler{json: format.json}}
+				s.appendValue(tc.value)
+				assert.Equal(t, format.want, string(s.buf), "json=%v", format.json)
+			}
+		})
+	}
+}
+
+func Test_appendValue_failingMarshaler(t *testing.T) {
+	for _, json := range []bool{true, false} {
+		s := &handleState{h: &Handler{json: json}}
+		s.appendValue(slog.AnyValue(jsonMarshalerFail{}))
+
+		assert.True(t, strings.HasPrefix(string(s.buf), `"!ERROR:json: error calling MarshalJSON`), string(s.buf))
+		assert.Contains(t, string(s.buf), assert.AnError.Error())
+	}
+}
+
+func Test_handleState_appendKey(t *testing.T) {
+	cases := []struct {
+		prefix string
+		key    string
+		want   string
+	}{
+		{"", "plain", `plain=`},
+		{"", "a b", `"a b"=`},
+		{"", "a=c", `"a=c"=`},
+		{"a", "b c", `"a.b c"=`},
+		{"a b", "c", `"a b.c"=`},
+		{"a", "b", `a.b=`},
+	}
+
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s/%s", tc.prefix, tc.key), func(t *testing.T) {
+			s := &handleState{h: &Handler{}}
+			if tc.prefix != "" {
+				s.openGroup(tc.prefix)
+			}
+			s.appendKey(tc.key)
+			assert.Equal(t, tc.want, string(s.buf))
+		})
+	}
+}
+
+func Test_handleState_groups(t *testing.T) {
+	t.Run("empty groups are dropped", func(t *testing.T) {
+		for _, json := range []bool{true, false} {
+			s := &handleState{h: &Handler{json: json}}
+			s.begin()
+			s.appendKey("a")
+			s.appendValue(slog.IntValue(1))
+			outer := s.openGroup("G")
+			inner := s.openGroup("H")
+			s.closeGroup(inner)
+			s.closeGroup(outer)
+			s.appendKey("b")
+			s.appendValue(slog.IntValue(2))
+			s.end()
+
+			if json {
+				assert.Equal(t, "{\"a\":1,\"b\":2}\n", string(s.buf))
+			} else {
+				assert.Equal(t, "a=1 b=2\n", string(s.buf))
+			}
+		}
+	})
+
+	t.Run("inline groups flatten", func(t *testing.T) {
+		s := &handleState{h: &Handler{json: true}}
+		s.begin()
+		s.appendAttr(slog.Group("", slog.String("foo", "bar")))
+		s.end()
+
+		assert.Equal(t, "{\"foo\":\"bar\"}\n", string(s.buf))
+	})
+
+	t.Run("LogValuer resolving to group", func(t *testing.T) {
+		s := &handleState{h: &Handler{}}
+		s.appendAttr(slog.Any("v", groupLogValuer{}))
+
+		assert.Equal(t, `v.foo="bar"`, string(s.buf))
+	})
+}
+
 type stringerValue struct{}
 
 func (s stringerValue) String() string {
 	return "stringerValue"
-}
-
-func Test_normalizeValue(t *testing.T) {
-	t.Run("slog.KindBool", func(t *testing.T) {
-		v := slog.BoolValue(true)
-		assert.Equal(t, true, normalizeValue(v))
-	})
-
-	t.Run("slog.KindDuration", func(t *testing.T) {
-		v := slog.DurationValue(1 * time.Second)
-		assert.Equal(t, "1s", normalizeValue(v))
-	})
-
-	t.Run("slog.KindFloat64", func(t *testing.T) {
-		v := slog.Float64Value(1.23)
-		assert.Equal(t, float64(1.23), normalizeValue(v))
-	})
-
-	t.Run("slog.KindUint64", func(t *testing.T) {
-		v := slog.Uint64Value(123)
-		assert.Equal(t, uint64(123), normalizeValue(v))
-	})
-
-	t.Run("slog.KindAny", func(t *testing.T) {
-		t.Run("error", func(t *testing.T) {
-			v := slog.AnyValue(errors.New("testing-error"))
-			assert.Equal(t, "testing-error", normalizeValue(v))
-		})
-
-		t.Run("nil", func(t *testing.T) {
-			v := slog.AnyValue(nil)
-			assert.Equal(t, nil, normalizeValue(v))
-		})
-
-		t.Run("json.Marshaler", func(t *testing.T) {
-			t.Run("success", func(t *testing.T) {
-				v := slog.AnyValue(jsonMarshalerSuccess{})
-
-				assert.Equal(t, json.RawMessage(`"JSON Marshal"`), normalizeValue(v))
-			})
-
-			t.Run("failure", func(t *testing.T) {
-				v := slog.AnyValue(jsonMarshalerFail{})
-
-				assert.Equal(t, assert.AnError.Error(), normalizeValue(v))
-			})
-		})
-	})
-
-	t.Run("slog.KindGroup", func(t *testing.T) {
-		t.Run("non-empty group", func(t *testing.T) {
-			v := slog.GroupValue(slog.String("key", "value"), slog.Int("num", 42))
-			result := normalizeValue(v)
-			rec, ok := result.(logRecord)
-			require.True(t, ok, "expected logRecord")
-			assert.Equal(t, "value", rec["key"])
-			assert.Equal(t, int64(42), rec["num"])
-		})
-
-		t.Run("empty group", func(t *testing.T) {
-			v := slog.GroupValue()
-			assert.Nil(t, normalizeValue(v))
-		})
-	})
-
-	t.Run("LogValuer resolving to group", func(t *testing.T) {
-		v := slog.AnyValue(groupLogValuer{})
-		result := normalizeValue(v)
-		rec, ok := result.(logRecord)
-		require.True(t, ok, "expected logRecord")
-		assert.Equal(t, "bar", rec["foo"])
-	})
-
-	t.Run("unknown kind returns string", func(t *testing.T) {
-		// Verify default case doesn't panic
-		assert.NotPanics(t, func() {
-			normalizeValue(slog.Value{})
-		})
-	})
 }
 
 type groupLogValuer struct{}

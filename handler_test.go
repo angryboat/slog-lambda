@@ -101,6 +101,13 @@ func TestHandler(t *testing.T) {
 		assert.Contains(t, buffer.String(), `"level":"INFO"`)
 	})
 
+	t.Run("empty WithAttrs and WithGroup return the receiver", func(t *testing.T) {
+		handler := sloglambda.NewHandler(new(bytes.Buffer))
+
+		assert.Same(t, handler, handler.WithAttrs(nil))
+		assert.Same(t, handler, handler.WithGroup(""))
+	})
+
 	t.Run("WithLevel nil reused concurrently", func(t *testing.T) {
 		opt := sloglambda.WithLevel(nil)
 
@@ -199,9 +206,8 @@ func TestHandler(t *testing.T) {
 				assert.Equal(t, "concurrent", result["msg"])
 			}},
 			{"Text", sloglambda.WithText(), func(t testing.TB, line string) {
-				assert.True(t, strings.HasPrefix(line, `g.j=`), line)
-				assert.Contains(t, line, ` level="INFO" msg="concurrent" `)
-				assert.True(t, strings.HasSuffix(line, ` type="app.log"`), line)
+				assert.True(t, strings.HasPrefix(line, `level="INFO" msg="concurrent" type="app.log" `), line)
+				assert.Regexp(t, ` goroutine=\d+ g\.j=\d+ g\.pad="x+"$`, line)
 			}},
 		} {
 			t.Run(format.name, func(t *testing.T) {
@@ -226,6 +232,39 @@ func TestHandler(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	t.Run("field order", func(t *testing.T) {
+		ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
+			AwsRequestID: "abc-123",
+		})
+
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.With("zzz", 1).WithGroup("g").InfoContext(ctx, "hi", "yyy", 2, "aaa", 3)
+
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"zzz":1,"g":{"yyy":2,"aaa":3}}`+"\n", buffer.String())
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+			logger.With("zzz", 1).WithGroup("g").InfoContext(ctx, "hi", "yyy", 2, "aaa", 3)
+
+			assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" record.requestId="abc-123" zzz=1 g.yyy=2 g.aaa=3`+"\n", buffer.String())
+		})
+
+		t.Run("time and source lead", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithSource()))
+
+			logger.Info("hi")
+
+			assert.Regexp(t, `^\{"time":"[^"]+","level":"INFO","source":\{"function":"[^"]+","file":"[^"]+","line":\d+\},"msg":"hi","type":"app.log",`, buffer.String())
+		})
 	})
 
 	t.Run("WithoutTime", func(t *testing.T) {
@@ -389,7 +428,7 @@ func TestHandler(t *testing.T) {
 
 			logger.Info("hi", "payload", json.RawMessage("{\n  \"a\": 1\n}"), "next", 2)
 
-			assert.Contains(t, buffer.String(), `next=2 payload={"a":1}`)
+			assert.Contains(t, buffer.String(), `payload={"a":1} next=2`)
 		})
 
 		t.Run("Text nil", func(t *testing.T) {
@@ -414,7 +453,7 @@ func TestHandler(t *testing.T) {
 
 				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"record_":{"x":1},"type":"app.log"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"record_":{"x":1}}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -423,7 +462,7 @@ func TestHandler(t *testing.T) {
 
 				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
 
-				assert.Equal(t, `level="INFO" msg="hi" record.functionName="test-function" record.requestId="abc-123" record.version="$LATEST" record_.x=1 type="app.log"`+"\n", buffer.String())
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" record.requestId="abc-123" record_.x=1`+"\n", buffer.String())
 			})
 		})
 
@@ -434,7 +473,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "nope")
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"nope"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type_":"nope"}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -443,7 +482,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "nope")
 
-				assert.Contains(t, buffer.String(), `type="app.log" type_="nope"`)
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" type_="nope"`+"\n", buffer.String())
 			})
 		})
 
@@ -454,7 +493,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "a", "type_", "b")
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"b","type__":"a"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type__":"a","type_":"b"}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -463,7 +502,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "a", "type_", "b")
 
-				assert.Contains(t, buffer.String(), `type="app.log" type_="b" type__="a"`)
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" type__="a" type_="b"`+"\n", buffer.String())
 			})
 		})
 
@@ -473,7 +512,80 @@ func TestHandler(t *testing.T) {
 
 			logger.With("type", "nope").Info("hi")
 
-			assert.Contains(t, buffer.String(), `"type":"app.log","type_":"nope"`)
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type_":"nope"}`+"\n", buffer.String())
+		})
+
+		t.Run("inline group keys are taken", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.Info("hi", "type", "a", slog.Group("", "type_", "b"))
+
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type__":"a","type_":"b"}`+"\n", buffer.String())
+		})
+
+		t.Run("empty groups are not taken", func(t *testing.T) {
+			tests := []struct {
+				name string
+				log  func(*slog.Logger)
+			}{
+				{"record attr", func(l *slog.Logger) { l.Info("hi", "type", "a", slog.Group("type_")) }},
+				{"nested record attr", func(l *slog.Logger) { l.Info("hi", "type", "a", slog.Group("type_", slog.Group("x"))) }},
+				{"WithAttrs", func(l *slog.Logger) { l.With("type", "a", slog.Group("type_")).Info("hi") }},
+				{"trailing WithGroup", func(l *slog.Logger) { l.With("type", "a").WithGroup("type_").Info("hi") }},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime())))
+
+					assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type_":"a"}`+"\n", buffer.String())
+				})
+			}
+		})
+
+		t.Run("non-empty groups are taken", func(t *testing.T) {
+			tests := []struct {
+				name string
+				log  func(*slog.Logger)
+				want string
+			}{
+				{"record attr", func(l *slog.Logger) { l.Info("hi", "type", "a", slog.Group("type_", "x", 1)) }, `"type__":"a","type_":{"x":1}}`},
+				{"WithGroup", func(l *slog.Logger) { l.With("type", "a").WithGroup("type_").With("x", 1).Info("hi") }, `"type__":"a","type_":{"x":1}}`},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime())))
+
+					assert.True(t, strings.HasSuffix(buffer.String(), tt.want+"\n"), buffer.String())
+				})
+			}
+		})
+
+		t.Run("unnamed LogValuers resolve once", func(t *testing.T) {
+			tests := []struct {
+				name string
+				log  func(*slog.Logger, slog.LogValuer)
+				want string
+			}{
+				{"after collision", func(l *slog.Logger, v slog.LogValuer) { l.Info("hi", "type", "a", slog.Any("", v)) }, `"type_":"a","first":1}`},
+				{"before collision", func(l *slog.Logger, v slog.LogValuer) { l.Info("hi", slog.Any("", v), "type", "a") }, `"first":1,"type_":"a"}`},
+				{"WithAttrs", func(l *slog.Logger, v slog.LogValuer) { l.With(slog.Any("", v)).Info("hi", "type", "a") }, `"first":1,"type_":"a"}`},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					valuer := &countingValuer{}
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime())), valuer)
+
+					assert.Equal(t, 1, valuer.calls)
+					assert.True(t, strings.HasSuffix(buffer.String(), tt.want+"\n"), buffer.String())
+				})
+			}
 		})
 
 		t.Run("nested group keys are untouched", func(t *testing.T) {
@@ -482,7 +594,7 @@ func TestHandler(t *testing.T) {
 
 			logger.WithGroup("g").Info("hi", "type", "nope", slog.Group("record", "x", 1))
 
-			assert.Contains(t, buffer.String(), `"g":{"record":{"x":1},"type":"nope"}`)
+			assert.Contains(t, buffer.String(), `"g":{"type":"nope","record":{"x":1}}`)
 		})
 
 		t.Run("empty WithType leaves type alone", func(t *testing.T) {
@@ -493,6 +605,135 @@ func TestHandler(t *testing.T) {
 
 			assert.Contains(t, buffer.String(), `"type":"mine"`)
 			assert.NotContains(t, buffer.String(), `"type_"`)
+		})
+
+		t.Run("request ID alone reserves record", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion("")))
+
+			logger.InfoContext(ctx, "hi", "record", 1)
+			logger.Info("hi", "record", 1)
+
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"requestId":"abc-123"},"record_":1}`+"\n"+
+				`{"level":"INFO","msg":"hi","type":"app.log","record":1}`+"\n", buffer.String())
+		})
+
+		t.Run("WithAttrs and record keys share the fallback space", func(t *testing.T) {
+			tests := []struct {
+				name string
+				log  func(*slog.Logger)
+				want string
+			}{
+				{"chain type_ then record type", func(l *slog.Logger) { l.With("type_", 1).Info("hi", "type", 2) }, `"type_":1,"type__":2}`},
+				{"chain type then record type_", func(l *slog.Logger) { l.With("type", 1).Info("hi", "type_", 2) }, `"type__":1,"type_":2}`},
+				{"chain inline group record", func(l *slog.Logger) { l.With(slog.Group("", "record", 1)).Info("hi") }, `"record_":1}`},
+				{"chain record then WithGroup", func(l *slog.Logger) { l.With("record", 1).WithGroup("g").Info("hi", "b", 2) }, `"record_":1,"g":{"b":2}}`},
+				{"nested chain record is untouched", func(l *slog.Logger) { l.With(slog.Group("x", "record", 1)).Info("hi") }, `"x":{"record":1}}`},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime())))
+
+					assert.True(t, strings.HasSuffix(buffer.String(), tt.want+"\n"), buffer.String())
+				})
+			}
+		})
+	})
+
+	t.Run("given a WithAttrs and WithGroup chain", func(t *testing.T) {
+		tests := []struct {
+			name string
+			log  func(*slog.Logger)
+			json string
+			text string
+		}{
+			{
+				"pending group with no record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").Info("hi") },
+				``, ``,
+			},
+			{
+				"open group then pending group with no record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").With("a", 1).WithGroup("h").Info("hi") },
+				`,"g":{"a":1}`, ` g.a=1`,
+			},
+			{
+				"open group then pending group with record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").With("a", 1).WithGroup("h").Info("hi", "b", 2) },
+				`,"g":{"a":1,"h":{"b":2}}`, ` g.a=1 g.h.b=2`,
+			},
+			{
+				"attrs then pending group with no record attrs",
+				func(l *slog.Logger) { l.With("a", 1).WithGroup("g").Info("hi") },
+				`,"a":1`, ` a=1`,
+			},
+			{
+				"nested pending groups",
+				func(l *slog.Logger) { l.WithGroup("g").WithGroup("h").Info("hi", "b", 2) },
+				`,"g":{"h":{"b":2}}`, ` g.h.b=2`,
+			},
+			{
+				"nested pending groups with only an empty record group",
+				func(l *slog.Logger) { l.WithGroup("g").WithGroup("h").Info("hi", slog.Group("x")) },
+				``, ``,
+			},
+			{
+				"group name needing quotes",
+				func(l *slog.Logger) { l.WithGroup("g h").With("a", 1).Info("hi", "b", 2) },
+				`,"g h":{"a":1,"b":2}`, ` "g h.a"=1 "g h.b"=2`,
+			},
+			{
+				"WithAttrs of only empty groups does not open pending groups",
+				func(l *slog.Logger) { l.With(slog.Group("z")).WithGroup("g").Info("hi", "b", 2) },
+				`,"g":{"b":2}`, ` g.b=2`,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Run("JSON", func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion(""))))
+
+					assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log"`+tt.json+"}\n", buffer.String())
+				})
+
+				t.Run("Text", func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion(""))))
+
+					assert.Equal(t, `level="INFO" msg="hi" type="app.log"`+tt.text+"\n", buffer.String())
+				})
+			})
+		}
+
+		t.Run("LogValuers resolve once in WithAttrs", func(t *testing.T) {
+			for _, format := range []struct {
+				name string
+				opt  sloglambda.Option
+			}{{"JSON", sloglambda.WithJSON()}, {"Text", sloglambda.WithText()}} {
+				t.Run(format.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					named := &countingValuer{}
+					unnamed := &countingValuer{}
+					nested := &countingValuer{}
+					logger := slog.New(sloglambda.NewHandler(buffer, format.opt, sloglambda.WithoutTime())).
+						With(slog.Any("named", named), slog.Any("", unnamed), slog.Group("g", slog.Any("nested", nested)))
+
+					logger.Info("one")
+					logger.Info("two")
+					logger.Info("three", "type", "a")
+
+					assert.Equal(t, 1, named.calls)
+					assert.Equal(t, 1, unnamed.calls)
+					assert.Equal(t, 1, nested.calls)
+					assert.Equal(t, 9, strings.Count(buffer.String(), "first"))
+					assert.NotContains(t, buffer.String(), "type_=2")
+					assert.NotContains(t, buffer.String(), `"type_":2`)
+				})
+			}
 		})
 	})
 
@@ -517,7 +758,7 @@ func TestHandler(t *testing.T) {
 			{"+Inf", math.Inf(1), "r=+Inf"},
 			{"chan", make(chan int), "r=0x"},
 			{"nested failing marshaler", struct{ F failingMarshaler }{}, "r={"},
-			{"invalid raw JSON", json.RawMessage(`{`), "r={"},
+			{"invalid raw JSON", json.RawMessage(`{`), `r="!ERROR:`},
 		}
 
 		for _, tt := range tests {
@@ -552,34 +793,34 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("given a value that fails to encode on retry", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		handler := sloglambda.NewHandler(buffer, sloglambda.WithJSON())
+	t.Run("given oversized records", func(t *testing.T) {
+		big := strings.Repeat("a", 20<<10)
 
-		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
-		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
 
-		err := handler.Handle(t.Context(), record)
+			logger.Info(big, "m", map[string]string{"k": big})
+			logger.Info("small")
 
-		require.ErrorContains(t, err, `bad "quoted" value`)
-		assert.Equal(t, 1, strings.Count(buffer.String(), "\n"))
+			lines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+			require.Len(t, lines, 2)
+			assert.Contains(t, lines[0], `"m":{"k":"`+big+`"}`)
+			assert.True(t, strings.HasPrefix(lines[1], `{"level":"INFO","msg":"small"`), lines[1])
+		})
 
-		var result map[string]any
-		require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
-		assert.Equal(t, "ERROR", result["level"])
-		assert.Contains(t, result["msg"], `bad "quoted" value`)
-	})
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
 
-	t.Run("given a value that fails to encode on retry and a failing writer", func(t *testing.T) {
-		handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
+			logger.Info("hi", slog.Group(big, "x", 1))
+			logger.Info("small", "y", 2)
 
-		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
-		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
-
-		err := handler.Handle(t.Context(), record)
-
-		require.ErrorIs(t, err, errWrite)
-		assert.ErrorContains(t, err, `bad "quoted" value`)
+			lines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+			require.Len(t, lines, 2)
+			assert.True(t, strings.HasSuffix(lines[0], " "+big+".x=1"), "missing big group key")
+			assert.True(t, strings.HasSuffix(lines[1], " y=2"), lines[1])
+		})
 	})
 
 	t.Run("given a failing writer", func(t *testing.T) {
@@ -609,14 +850,16 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errWrite
 }
 
-type flakyMarshaler struct{ calls int }
+type countingValuer struct {
+	calls int
+}
 
-func (m *flakyMarshaler) MarshalJSON() ([]byte, error) {
-	m.calls++
-	if m.calls%2 == 1 {
-		return nil, errors.New(`bad "quoted" value`)
+func (v *countingValuer) LogValue() slog.Value {
+	v.calls++
+	if v.calls == 1 {
+		return slog.GroupValue(slog.Int("first", 1))
 	}
-	return []byte(`"ok"`), nil
+	return slog.GroupValue(slog.Int("type_", 2))
 }
 
 type failingMarshaler struct{}
@@ -642,5 +885,35 @@ func BenchmarkText(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		logger.Info("test", "count", i)
+	}
+}
+
+func BenchmarkJSONGroups(b *testing.B) {
+	benchmarkGroups(b, sloglambda.WithJSON())
+}
+
+func BenchmarkTextGroups(b *testing.B) {
+	benchmarkGroups(b, sloglambda.WithText())
+}
+
+func benchmarkGroups(b *testing.B, format sloglambda.Option) {
+	ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
+		AwsRequestID: "abc-123",
+	})
+	logger := slog.New(sloglambda.NewHandler(io.Discard, format)).
+		With("service", "orders", "region", "us-east-1").
+		WithGroup("request").
+		With("method", "POST", "path", "/orders")
+
+	b.ReportAllocs()
+
+	for i := 0; b.Loop(); i++ {
+		logger.InfoContext(ctx, "handled",
+			"status", 201,
+			"duration", 42*time.Millisecond,
+			slog.Group("user", "id", i, "admin", false, slog.Group("plan", "name", "pro", "seats", 5)),
+			slog.Group("empty"),
+			"ratio", 0.75,
+		)
 	}
 }
