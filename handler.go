@@ -880,7 +880,14 @@ func (s *handleState) appendJSONMarshal(v any) {
 		s.appendError(err)
 		return
 	}
-	s.buf = append(s.buf, bytes.TrimSuffix(j.buf.Bytes(), []byte("\n"))...)
+	out := bytes.TrimSuffix(j.buf.Bytes(), []byte("\n"))
+	if !s.h.json {
+		if str := string(out); textNeedsQuoting(str) {
+			s.buf = strconv.AppendQuote(s.buf, str)
+			return
+		}
+	}
+	s.buf = append(s.buf, out...)
 }
 
 const hexDigits = "0123456789abcdef"

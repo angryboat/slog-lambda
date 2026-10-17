@@ -419,7 +419,7 @@ func TestHandler(t *testing.T) {
 
 			logger.Info("hi", "payload", json.RawMessage(`{"a":1}`))
 
-			assert.Contains(t, buffer.String(), `payload={"a":1}`)
+			assert.Contains(t, buffer.String(), `payload="{\"a\":1}"`)
 		})
 
 		t.Run("Text indented", func(t *testing.T) {
@@ -428,7 +428,25 @@ func TestHandler(t *testing.T) {
 
 			logger.Info("hi", "payload", json.RawMessage("{\n  \"a\": 1\n}"), "next", 2)
 
-			assert.Contains(t, buffer.String(), `payload={"a":1} next=2`)
+			assert.Contains(t, buffer.String(), `payload="{\"a\":1}" next=2`)
+		})
+
+		t.Run("Text with spaces and equals", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "v", json.RawMessage(`{"a":"b c=d"}`), "k", "x")
+
+			assert.Contains(t, buffer.String(), `v="{\"a\":\"b c=d\"}" k="x"`)
+		})
+
+		t.Run("Text without quoting", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
+
+			logger.Info("hi", "payload", json.RawMessage(`[1,2]`), "next", 2)
+
+			assert.Contains(t, buffer.String(), `payload=[1,2] next=2`)
 		})
 
 		t.Run("Text nil", func(t *testing.T) {
