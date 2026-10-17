@@ -199,9 +199,8 @@ func TestHandler(t *testing.T) {
 				assert.Equal(t, "concurrent", result["msg"])
 			}},
 			{"Text", sloglambda.WithText(), func(t testing.TB, line string) {
-				assert.True(t, strings.HasPrefix(line, `g.j=`), line)
-				assert.Contains(t, line, ` level="INFO" msg="concurrent" `)
-				assert.True(t, strings.HasSuffix(line, ` type="app.log"`), line)
+				assert.True(t, strings.HasPrefix(line, `level="INFO" msg="concurrent" type="app.log" `), line)
+				assert.Regexp(t, ` goroutine=\d+ g\.j=\d+ g\.pad="x+"$`, line)
 			}},
 		} {
 			t.Run(format.name, func(t *testing.T) {
@@ -226,6 +225,39 @@ func TestHandler(t *testing.T) {
 				}
 			})
 		}
+	})
+
+	t.Run("field order", func(t *testing.T) {
+		ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
+			AwsRequestID: "abc-123",
+		})
+
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.With("zzz", 1).WithGroup("g").InfoContext(ctx, "hi", "yyy", 2, "aaa", 3)
+
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"zzz":1,"g":{"yyy":2,"aaa":3}}`+"\n", buffer.String())
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+			logger.With("zzz", 1).WithGroup("g").InfoContext(ctx, "hi", "yyy", 2, "aaa", 3)
+
+			assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" record.requestId="abc-123" zzz=1 g.yyy=2 g.aaa=3`+"\n", buffer.String())
+		})
+
+		t.Run("time and source lead", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithSource()))
+
+			logger.Info("hi")
+
+			assert.Regexp(t, `^\{"time":"[^"]+","level":"INFO","source":\{"function":"[^"]+","file":"[^"]+","line":\d+\},"msg":"hi","type":"app.log",`, buffer.String())
+		})
 	})
 
 	t.Run("WithoutTime", func(t *testing.T) {
@@ -389,7 +421,7 @@ func TestHandler(t *testing.T) {
 
 			logger.Info("hi", "payload", json.RawMessage("{\n  \"a\": 1\n}"), "next", 2)
 
-			assert.Contains(t, buffer.String(), `next=2 payload={"a":1}`)
+			assert.Contains(t, buffer.String(), `payload={"a":1} next=2`)
 		})
 
 		t.Run("Text nil", func(t *testing.T) {
@@ -414,7 +446,7 @@ func TestHandler(t *testing.T) {
 
 				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"record_":{"x":1},"type":"app.log"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"record_":{"x":1}}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -423,7 +455,7 @@ func TestHandler(t *testing.T) {
 
 				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
 
-				assert.Equal(t, `level="INFO" msg="hi" record.functionName="test-function" record.requestId="abc-123" record.version="$LATEST" record_.x=1 type="app.log"`+"\n", buffer.String())
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" record.requestId="abc-123" record_.x=1`+"\n", buffer.String())
 			})
 		})
 
@@ -434,7 +466,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "nope")
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"nope"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type_":"nope"}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -443,7 +475,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "nope")
 
-				assert.Contains(t, buffer.String(), `type="app.log" type_="nope"`)
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" type_="nope"`+"\n", buffer.String())
 			})
 		})
 
@@ -454,7 +486,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "a", "type_", "b")
 
-				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"b","type__":"a"}`, buffer.String())
+				assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type__":"a","type_":"b"}`+"\n", buffer.String())
 			})
 
 			t.Run("Text", func(t *testing.T) {
@@ -463,7 +495,7 @@ func TestHandler(t *testing.T) {
 
 				logger.Info("hi", "type", "a", "type_", "b")
 
-				assert.Contains(t, buffer.String(), `type="app.log" type_="b" type__="a"`)
+				assert.Equal(t, `level="INFO" msg="hi" type="app.log" record.functionName="test-function" record.version="$LATEST" type__="a" type_="b"`+"\n", buffer.String())
 			})
 		})
 
@@ -473,7 +505,7 @@ func TestHandler(t *testing.T) {
 
 			logger.With("type", "nope").Info("hi")
 
-			assert.Contains(t, buffer.String(), `"type":"app.log","type_":"nope"`)
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"functionName":"test-function","version":"$LATEST"},"type_":"nope"}`+"\n", buffer.String())
 		})
 
 		t.Run("nested group keys are untouched", func(t *testing.T) {
@@ -482,7 +514,7 @@ func TestHandler(t *testing.T) {
 
 			logger.WithGroup("g").Info("hi", "type", "nope", slog.Group("record", "x", 1))
 
-			assert.Contains(t, buffer.String(), `"g":{"record":{"x":1},"type":"nope"}`)
+			assert.Contains(t, buffer.String(), `"g":{"type":"nope","record":{"x":1}}`)
 		})
 
 		t.Run("empty WithType leaves type alone", func(t *testing.T) {
@@ -517,7 +549,7 @@ func TestHandler(t *testing.T) {
 			{"+Inf", math.Inf(1), "r=+Inf"},
 			{"chan", make(chan int), "r=0x"},
 			{"nested failing marshaler", struct{ F failingMarshaler }{}, "r={"},
-			{"invalid raw JSON", json.RawMessage(`{`), "r={"},
+			{"invalid raw JSON", json.RawMessage(`{`), `r="!ERROR:`},
 		}
 
 		for _, tt := range tests {
@@ -552,36 +584,6 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("given a value that fails to encode on retry", func(t *testing.T) {
-		buffer := new(bytes.Buffer)
-		handler := sloglambda.NewHandler(buffer, sloglambda.WithJSON())
-
-		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
-		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
-
-		err := handler.Handle(t.Context(), record)
-
-		require.ErrorContains(t, err, `bad "quoted" value`)
-		assert.Equal(t, 1, strings.Count(buffer.String(), "\n"))
-
-		var result map[string]any
-		require.NoError(t, json.Unmarshal(buffer.Bytes(), &result))
-		assert.Equal(t, "ERROR", result["level"])
-		assert.Contains(t, result["msg"], `bad "quoted" value`)
-	})
-
-	t.Run("given a value that fails to encode on retry and a failing writer", func(t *testing.T) {
-		handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
-
-		record := slog.NewRecord(time.Now(), slog.LevelInfo, "ratio", 0)
-		record.AddAttrs(slog.Any("r", struct{ F *flakyMarshaler }{new(flakyMarshaler)}))
-
-		err := handler.Handle(t.Context(), record)
-
-		require.ErrorIs(t, err, errWrite)
-		assert.ErrorContains(t, err, `bad "quoted" value`)
-	})
-
 	t.Run("given a failing writer", func(t *testing.T) {
 		t.Run("JSON", func(t *testing.T) {
 			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
@@ -609,16 +611,6 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errWrite
 }
 
-type flakyMarshaler struct{ calls int }
-
-func (m *flakyMarshaler) MarshalJSON() ([]byte, error) {
-	m.calls++
-	if m.calls%2 == 1 {
-		return nil, errors.New(`bad "quoted" value`)
-	}
-	return []byte(`"ok"`), nil
-}
-
 type failingMarshaler struct{}
 
 func (failingMarshaler) MarshalJSON() ([]byte, error) {
@@ -642,5 +634,35 @@ func BenchmarkText(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		logger.Info("test", "count", i)
+	}
+}
+
+func BenchmarkJSONGroups(b *testing.B) {
+	benchmarkGroups(b, sloglambda.WithJSON())
+}
+
+func BenchmarkTextGroups(b *testing.B) {
+	benchmarkGroups(b, sloglambda.WithText())
+}
+
+func benchmarkGroups(b *testing.B, format sloglambda.Option) {
+	ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
+		AwsRequestID: "abc-123",
+	})
+	logger := slog.New(sloglambda.NewHandler(io.Discard, format)).
+		With("service", "orders", "region", "us-east-1").
+		WithGroup("request").
+		With("method", "POST", "path", "/orders")
+
+	b.ReportAllocs()
+
+	for i := 0; b.Loop(); i++ {
+		logger.InfoContext(ctx, "handled",
+			"status", 201,
+			"duration", 42*time.Millisecond,
+			slog.Group("user", "id", i, "admin", false, slog.Group("plan", "name", "pro", "seats", 5)),
+			slog.Group("empty"),
+			"ratio", 0.75,
+		)
 	}
 }

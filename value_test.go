@@ -26,15 +26,15 @@ func TestValueTypes(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/foo/bar", nil)
 		logger.InfoContext(t.Context(), t.Name(), slog.Any("request", req))
 		assert.Contains(t, buffer.String(), ` request="&{GET /foo/bar HTTP/1.1 `)
-		assert.True(t, strings.HasSuffix(buffer.String(), ` type="app.log"`+"\n"), buffer.String())
+		assert.True(t, strings.HasSuffix(buffer.String(), `}"`+"\n"), buffer.String())
 	})
 
 	t.Run("http.Request in Group", func(t *testing.T) {
 		logger := slog.New(newHandler(t))
 		req, _ := http.NewRequest("GET", "/foo/bar", nil)
 		logger.InfoContext(t.Context(), t.Name(), slog.Group("http", slog.Any("request", req)))
-		assert.True(t, strings.HasPrefix(buffer.String(), `http.request="&{GET /foo/bar HTTP/1.1 `), buffer.String())
-		assert.True(t, strings.HasSuffix(buffer.String(), ` type="app.log"`+"\n"), buffer.String())
+		assert.Contains(t, buffer.String(), ` http.request="&{GET /foo/bar HTTP/1.1 `)
+		assert.True(t, strings.HasSuffix(buffer.String(), `}"`+"\n"), buffer.String())
 	})
 
 	t.Run("http.Request JSON", func(t *testing.T) {

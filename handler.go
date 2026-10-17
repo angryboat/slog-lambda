@@ -3,6 +3,12 @@
 // It auto-configures log format (JSON or text) and level from Lambda's
 // advanced logging environment variables. Options override env values.
 //
+// Fields are written in a fixed order, matching [slog.JSONHandler] and
+// [slog.TextHandler]: "time", "level", "source", "msg", then the handler's
+// "type" and "record", then attrs and groups in the order they were added.
+// Values that cannot be encoded as JSON are written as "!ERROR:<reason>"
+// strings so a record is never dropped.
+//
 // The handler reserves two top-level keys: "record" (Lambda function name,
 // version, and request ID) and "type" (see [WithType]). When the handler sets
 // one of these and an attr or group uses the same key at the top level, the
@@ -16,13 +22,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,10 +221,16 @@ func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (h *Handler) WithAttrs(attr []slog.Attr) slog.Handler {
+	if len(attr) == 0 {
+		return h
+	}
 	return h.copy(groupOrAttrs{attrs: attr})
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
+	if name == "" {
+		return h
+	}
 	return h.copy(groupOrAttrs{group: name})
 }
 
@@ -232,243 +243,486 @@ func (h *Handler) copy(g groupOrAttrs) *Handler {
 }
 
 func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
-	value := make(logRecord, 10)
-	topLevel := value
+	s := newHandleState(h, record)
+	defer s.free()
 
-	value.append(slog.String(slog.LevelKey, lambdaLoggerLevelString(record.Level)))
-	value.append(slog.String(slog.MessageKey, record.Message))
+	s.begin()
 
 	if !record.Time.IsZero() && !h.excludeTime {
-		value.append(slog.Time(slog.TimeKey, record.Time))
+		s.appendKey(slog.TimeKey)
+		s.appendTime(record.Time)
 	}
+
+	s.appendKey(slog.LevelKey)
+	s.appendString(lambdaLoggerLevelString(record.Level))
 
 	if record.PC != 0 && h.source {
 		frames := runtime.CallersFrames([]uintptr{record.PC})
 		frame, _ := frames.Next()
 
-		value.append(slog.Group(slog.SourceKey,
-			slog.String("function", frame.Function),
-			slog.String("file", frame.File),
-			slog.Int("line", frame.Line),
-		))
+		g := s.openGroup(slog.SourceKey)
+		s.appendKey("function")
+		s.appendString(frame.Function)
+		s.appendKey("file")
+		s.appendString(frame.File)
+		s.appendKey("line")
+		s.buf = strconv.AppendInt(s.buf, int64(frame.Line), 10)
+		s.closeGroup(g)
 	}
 
-	for _, ga := range h.gattr {
-		if ga.group == "" {
-			for _, a := range ga.attrs {
-				value.append(a)
-			}
-		} else {
-			group := make(logRecord, 10)
-			value[ga.group] = group
-			value = group
-		}
-	}
-
-	record.Attrs(func(a slog.Attr) bool {
-		value.append(a)
-		return true
-	})
-
-	lambdaGroup := make(logRecord, 3)
-	if h.functionName != "" {
-		lambdaGroup.append(slog.String(kLambdaFunctionName, h.functionName))
-	}
-	if h.functionVersion != "" {
-		lambdaGroup.append(slog.String(kLambdaFunctionVersion, h.functionVersion))
-	}
-
-	if lc, _ := lambdacontext.FromContext(ctx); lc != nil {
-		lambdaGroup.append(slog.String(kLambdaRequestId, lc.AwsRequestID))
-	}
-
-	if len(lambdaGroup) > 0 {
-		topLevel.reserve(kLambdaRecord, lambdaGroup)
-	}
+	s.appendKey(slog.MessageKey)
+	s.appendString(record.Message)
 
 	if h.logType != "" {
-		topLevel.reserve(kLambdaLogType, h.logType)
+		s.appendKey(kLambdaLogType)
+		s.appendString(h.logType)
 	}
 
-	topLevel.clean()
-
-	buf := getBuffer()
-	defer putBuffer(buf)
-
-	if h.json {
-		if err := json.NewEncoder(buf).Encode(topLevel); err != nil {
-			buf.Reset()
-			topLevel.replaceUnencodable()
-			if err := json.NewEncoder(buf).Encode(topLevel); err != nil {
-				return h.writeJSONFallback(err)
-			}
+	lc, _ := lambdacontext.FromContext(ctx)
+	s.hasRecord = h.functionName != "" || h.functionVersion != "" || lc != nil
+	if s.hasRecord {
+		g := s.openGroup(kLambdaRecord)
+		if h.functionName != "" {
+			s.appendKey(kLambdaFunctionName)
+			s.appendString(h.functionName)
 		}
-	} else {
-		writeTextRecord(buf, topLevel, "")
-		// Remove the last trailing space
-		buf.Truncate(buf.Len() - 1)
-		buf.Write([]byte("\n"))
+		if h.functionVersion != "" {
+			s.appendKey(kLambdaFunctionVersion)
+			s.appendString(h.functionVersion)
+		}
+		if lc != nil {
+			s.appendKey(kLambdaRequestId)
+			s.appendString(lc.AwsRequestID)
+		}
+		s.closeGroup(g)
 	}
+
+	s.appendGroupsAndAttrs(h.gattr)
+	s.end()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	_, err := io.Copy(h.out, buf)
+	_, err := h.out.Write(s.buf)
 	return err
 }
 
-func (h *Handler) writeJSONFallback(encodeErr error) error {
-	line, _ := json.Marshal(map[string]string{
-		slog.LevelKey:   "ERROR",
-		slog.MessageKey: "failed to encode log record: " + encodeErr.Error(),
-	})
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	_, err := h.out.Write(append(line, '\n'))
-	return errors.Join(encodeErr, err)
-}
-
 var _ slog.Handler = (*Handler)(nil)
-
-type logRecord map[string]any
-
-func (r logRecord) append(attr slog.Attr) {
-	if attr.Equal(slog.Attr{}) {
-		return
-	}
-
-	if attr.Value.Kind() == slog.KindGroup {
-		group := attr.Value.Group()
-		if len(group) == 0 {
-			return
-		}
-
-		if attr.Key == "" {
-			for _, a := range group {
-				r.append(a)
-			}
-		} else {
-			r[attr.Key] = make(logRecord, len(group))
-			for _, a := range group {
-				r[attr.Key].(logRecord).append(a)
-			}
-		}
-	} else {
-		r[attr.Key] = normalizeValue(attr.Value)
-	}
-}
-
-func (r logRecord) reserve(key string, value any) {
-	if existing, ok := r[key]; ok {
-		fallback := key + "_"
-		for _, taken := r[fallback]; taken; _, taken = r[fallback] {
-			fallback += "_"
-		}
-		r[fallback] = existing
-	}
-	r[key] = value
-}
-
-func (r logRecord) clean() {
-	for k, v := range r {
-		if lr, ok := v.(logRecord); ok {
-			lr.clean()
-			if len(lr) == 0 {
-				delete(r, k)
-			}
-		}
-	}
-}
-
-func (r logRecord) replaceUnencodable() {
-	for k, v := range r {
-		if lr, ok := v.(logRecord); ok {
-			lr.replaceUnencodable()
-			continue
-		}
-		if _, err := json.Marshal(v); err != nil {
-			r[k] = "!ERROR:" + err.Error()
-		}
-	}
-}
-
-func (r logRecord) keys() []string {
-	keys := make([]string, 0, len(r))
-	for k := range r {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-var bufferPool = sync.Pool{
-	New: func() any {
-		b := bytes.NewBuffer(nil)
-		b.Grow(1024)
-		return b
-	},
-}
-
-func getBuffer() *bytes.Buffer {
-	return bufferPool.Get().(*bytes.Buffer)
-}
-
-func putBuffer(b *bytes.Buffer) {
-	const maxBufferSize = 16 << 10
-
-	if b.Cap() <= maxBufferSize {
-		b.Reset()
-		bufferPool.Put(b)
-	}
-}
 
 type groupOrAttrs struct {
 	group string      // group name if non-empty
 	attrs []slog.Attr // attrs if non-empty
 }
 
-func writeTextRecord(w io.Writer, record logRecord, path string) {
-	if record == nil {
+type handleState struct {
+	h      *Handler
+	record slog.Record
+	buf    []byte
+	sep    bool
+	depth  int
+
+	prefix      []byte
+	prefixQuote bool
+
+	hasRecord bool
+	taken     map[string]bool
+}
+
+type groupMark struct {
+	start       int
+	opened      int
+	sep         bool
+	prefixLen   int
+	prefixQuote bool
+}
+
+const maxPooledBufferSize = 16 << 10
+
+var statePool = sync.Pool{
+	New: func() any {
+		return &handleState{buf: make([]byte, 0, 1024)}
+	},
+}
+
+func newHandleState(h *Handler, record slog.Record) *handleState {
+	s := statePool.Get().(*handleState)
+	s.h = h
+	s.record = record
+	return s
+}
+
+func (s *handleState) free() {
+	if cap(s.buf) > maxPooledBufferSize {
+		return
+	}
+	*s = handleState{buf: s.buf[:0], prefix: s.prefix[:0]}
+	statePool.Put(s)
+}
+
+func (s *handleState) begin() {
+	if s.h.json {
+		s.buf = append(s.buf, '{')
+	}
+}
+
+func (s *handleState) end() {
+	if s.h.json {
+		s.buf = append(s.buf, '}')
+	}
+	s.buf = append(s.buf, '\n')
+}
+
+func (s *handleState) appendGroupsAndAttrs(gattr []groupOrAttrs) {
+	for i, ga := range gattr {
+		if ga.group != "" {
+			g := s.openGroup(s.userKey(ga.group))
+			s.appendGroupsAndAttrs(gattr[i+1:])
+			s.closeGroup(g)
+			return
+		}
+		for _, a := range ga.attrs {
+			s.appendAttr(a)
+		}
+	}
+
+	s.record.Attrs(func(a slog.Attr) bool {
+		s.appendAttr(a)
+		return true
+	})
+}
+
+func (s *handleState) appendAttr(a slog.Attr) {
+	a.Value = a.Value.Resolve()
+	if a.Equal(slog.Attr{}) {
 		return
 	}
 
-	keys := record.keys()
-	slices.Sort(keys)
+	if a.Value.Kind() != slog.KindGroup {
+		s.appendKey(s.userKey(a.Key))
+		s.appendValue(a.Value)
+		return
+	}
 
-	for _, key := range keys {
-		value := record[key]
-		if path != "" {
-			key = path + "." + key
+	if a.Key == "" {
+		for _, ga := range a.Value.Group() {
+			s.appendAttr(ga)
 		}
+		return
+	}
 
-		if _, ok := value.(logRecord); !ok {
-			w.Write([]byte(quoteTextIfNeeded(key)))
-			w.Write([]byte("="))
+	g := s.openGroup(s.userKey(a.Key))
+	for _, ga := range a.Value.Group() {
+		s.appendAttr(ga)
+	}
+	s.closeGroup(g)
+}
+
+// openGroup starts a nested group. closeGroup drops it again if nothing was
+// written inside, since slog requires empty groups to be omitted.
+func (s *handleState) openGroup(name string) groupMark {
+	g := groupMark{
+		start:       len(s.buf),
+		sep:         s.sep,
+		prefixLen:   len(s.prefix),
+		prefixQuote: s.prefixQuote,
+	}
+
+	if s.h.json {
+		s.appendKey(name)
+		s.buf = append(s.buf, '{')
+		s.sep = false
+	} else {
+		s.prefix = append(append(s.prefix, name...), '.')
+		s.prefixQuote = s.prefixQuote || textNeedsQuoting(name)
+	}
+
+	s.depth++
+	g.opened = len(s.buf)
+	return g
+}
+
+func (s *handleState) closeGroup(g groupMark) {
+	s.depth--
+	s.prefix = s.prefix[:g.prefixLen]
+	s.prefixQuote = g.prefixQuote
+
+	if len(s.buf) == g.opened {
+		s.buf = s.buf[:g.start]
+		s.sep = g.sep
+		return
+	}
+
+	if s.h.json {
+		s.buf = append(s.buf, '}')
+	}
+}
+
+func (s *handleState) userKey(key string) string {
+	if s.depth > 0 || !s.isReserved(key) {
+		return key
+	}
+
+	if s.taken == nil {
+		s.taken = s.topLevelUserKeys()
+	}
+
+	fallback := key + "_"
+	for s.taken[fallback] {
+		fallback += "_"
+	}
+	return fallback
+}
+
+func (s *handleState) isReserved(key string) bool {
+	switch key {
+	case kLambdaLogType:
+		return s.h.logType != ""
+	case kLambdaRecord:
+		return s.hasRecord
+	default:
+		return false
+	}
+}
+
+func (s *handleState) topLevelUserKeys() map[string]bool {
+	keys := make(map[string]bool)
+
+	for _, ga := range s.h.gattr {
+		if ga.group != "" {
+			keys[ga.group] = true
+			return keys
 		}
-
-		switch v := value.(type) {
-		case logRecord:
-			writeTextRecord(w, v, key)
-		case string:
-			w.Write([]byte(strconv.Quote(v)))
-		case json.RawMessage:
-			w.Write(v)
-		default:
-			w.Write([]byte(quoteTextIfNeeded(fmt.Sprintf("%v", v))))
+		for _, a := range ga.attrs {
+			addTopLevelKey(keys, a)
 		}
+	}
 
-		if _, ok := value.(logRecord); !ok {
-			w.Write([]byte(" "))
+	s.record.Attrs(func(a slog.Attr) bool {
+		addTopLevelKey(keys, a)
+		return true
+	})
+	return keys
+}
+
+func addTopLevelKey(keys map[string]bool, a slog.Attr) {
+	if a.Key != "" {
+		keys[a.Key] = true
+		return
+	}
+
+	if v := a.Value.Resolve(); v.Kind() == slog.KindGroup {
+		for _, ga := range v.Group() {
+			addTopLevelKey(keys, ga)
 		}
 	}
 }
 
-func quoteTextIfNeeded(s string) string {
-	if textNeedsQuoting(s) {
-		return strconv.Quote(s)
+func (s *handleState) appendKey(key string) {
+	if s.sep {
+		if s.h.json {
+			s.buf = append(s.buf, ',')
+		} else {
+			s.buf = append(s.buf, ' ')
+		}
 	}
-	return s
+	s.sep = true
+
+	if s.h.json {
+		s.buf = appendJSONString(s.buf, key)
+		s.buf = append(s.buf, ':')
+		return
+	}
+
+	if s.prefixQuote || textNeedsQuoting(key) {
+		s.buf = strconv.AppendQuote(s.buf, string(s.prefix)+key)
+	} else {
+		s.buf = append(s.buf, s.prefix...)
+		s.buf = append(s.buf, key...)
+	}
+	s.buf = append(s.buf, '=')
+}
+
+func (s *handleState) appendValue(v slog.Value) {
+	switch v.Kind() {
+	case slog.KindString:
+		s.appendString(v.String())
+	case slog.KindInt64:
+		s.buf = strconv.AppendInt(s.buf, v.Int64(), 10)
+	case slog.KindUint64:
+		s.buf = strconv.AppendUint(s.buf, v.Uint64(), 10)
+	case slog.KindBool:
+		s.buf = strconv.AppendBool(s.buf, v.Bool())
+	case slog.KindFloat64:
+		s.appendFloat(v.Float64())
+	case slog.KindDuration:
+		s.appendString(v.Duration().String())
+	case slog.KindTime:
+		s.appendTime(v.Time())
+	case slog.KindAny:
+		s.appendAny(v.Any())
+	default:
+		s.appendString(v.String())
+	}
+}
+
+func (s *handleState) appendString(str string) {
+	if s.h.json {
+		s.buf = appendJSONString(s.buf, str)
+	} else {
+		s.buf = strconv.AppendQuote(s.buf, str)
+	}
+}
+
+func (s *handleState) appendTime(t time.Time) {
+	s.buf = append(s.buf, '"')
+	s.buf = t.AppendFormat(s.buf, time.RFC3339Nano)
+	s.buf = append(s.buf, '"')
+}
+
+func (s *handleState) appendFloat(f float64) {
+	if !s.h.json {
+		s.buf = strconv.AppendFloat(s.buf, f, 'g', -1, 64)
+		return
+	}
+
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		s.appendError(&json.UnsupportedValueError{Str: strconv.FormatFloat(f, 'g', -1, 64)})
+		return
+	}
+
+	s.buf = appendJSONFloat(s.buf, f)
+}
+
+func (s *handleState) appendAny(v any) {
+	switch v := v.(type) {
+	case nil:
+		if s.h.json {
+			s.buf = append(s.buf, "null"...)
+		} else {
+			s.buf = append(s.buf, "<nil>"...)
+		}
+		return
+	case error:
+		s.appendString(v.Error())
+		return
+	case json.Marshaler:
+		s.appendJSONMarshal(v)
+		return
+	}
+
+	if s.h.json {
+		s.appendJSONMarshal(v)
+		return
+	}
+
+	str := fmt.Sprintf("%v", v)
+	if textNeedsQuoting(str) {
+		s.buf = strconv.AppendQuote(s.buf, str)
+	} else {
+		s.buf = append(s.buf, str...)
+	}
+}
+
+func (s *handleState) appendError(err error) {
+	s.appendString("!ERROR:" + err.Error())
+}
+
+type jsonEncoder struct {
+	buf bytes.Buffer
+	enc *json.Encoder
+}
+
+var jsonEncoderPool = sync.Pool{
+	New: func() any {
+		j := new(jsonEncoder)
+		j.enc = json.NewEncoder(&j.buf)
+		j.enc.SetEscapeHTML(false)
+		return j
+	},
+}
+
+func (s *handleState) appendJSONMarshal(v any) {
+	j := jsonEncoderPool.Get().(*jsonEncoder)
+	defer func() {
+		if j.buf.Cap() > maxPooledBufferSize {
+			return
+		}
+		j.buf.Reset()
+		jsonEncoderPool.Put(j)
+	}()
+
+	if err := j.enc.Encode(v); err != nil {
+		s.appendError(err)
+		return
+	}
+	s.buf = append(s.buf, bytes.TrimSuffix(j.buf.Bytes(), []byte("\n"))...)
+}
+
+const hexDigits = "0123456789abcdef"
+
+func appendJSONString(buf []byte, s string) []byte {
+	buf = append(buf, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			if b >= 0x20 && b != '"' && b != '\\' {
+				i++
+				continue
+			}
+			buf = append(buf, s[start:i]...)
+			switch b {
+			case '"', '\\':
+				buf = append(buf, '\\', b)
+			case '\n':
+				buf = append(buf, '\\', 'n')
+			case '\r':
+				buf = append(buf, '\\', 'r')
+			case '\t':
+				buf = append(buf, '\\', 't')
+			default:
+				buf = append(buf, '\\', 'u', '0', '0', hexDigits[b>>4], hexDigits[b&0xF])
+			}
+			i++
+			start = i
+			continue
+		}
+
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			buf = append(buf, s[start:i]...)
+			buf = append(buf, `\ufffd`...)
+			i += size
+			start = i
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			buf = append(buf, s[start:i]...)
+			buf = append(buf, '\\', 'u', '2', '0', '2', hexDigits[r&0xF])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	buf = append(buf, s[start:]...)
+	return append(buf, '"')
+}
+
+// appendJSONFloat formats f the way encoding/json does.
+func appendJSONFloat(buf []byte, f float64) []byte {
+	format := byte('f')
+	if abs := math.Abs(f); abs != 0 && (abs < 1e-6 || abs >= 1e21) {
+		format = 'e'
+	}
+
+	buf = strconv.AppendFloat(buf, f, format, -1, 64)
+	if format == 'e' {
+		if n := len(buf); n >= 4 && buf[n-4] == 'e' && buf[n-3] == '-' && buf[n-2] == '0' {
+			buf[n-2] = buf[n-1]
+			buf = buf[:n-1]
+		}
+	}
+	return buf
 }
 
 func textNeedsQuoting(s string) bool {
@@ -491,58 +745,4 @@ func textNeedsQuoting(s string) bool {
 		i += size
 	}
 	return false
-}
-
-func normalizeValue(v slog.Value) any {
-	switch v.Kind() {
-	case slog.KindTime:
-		return v.Time().Format(time.RFC3339Nano)
-	case slog.KindBool:
-		return v.Bool()
-	case slog.KindDuration:
-		return v.Duration().String()
-	case slog.KindFloat64:
-		return v.Float64()
-	case slog.KindInt64:
-		return v.Int64()
-	case slog.KindString:
-		return v.String()
-	case slog.KindUint64:
-		return v.Uint64()
-	case slog.KindLogValuer:
-		return normalizeValue(v.Resolve())
-	case slog.KindAny:
-		return normalizeAnyValue(v.Any())
-	case slog.KindGroup:
-		attrs := v.Group()
-		if len(attrs) == 0 {
-			return nil
-		}
-		rec := make(logRecord, len(attrs))
-		for _, a := range attrs {
-			rec.append(a)
-		}
-		return rec
-	default:
-		return v.String()
-	}
-}
-
-func normalizeAnyValue(val any) any {
-	switch v := val.(type) {
-	case error:
-		return v.Error()
-	case json.Marshaler:
-		b, err := v.MarshalJSON()
-		if err != nil {
-			return err.Error()
-		}
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, b); err != nil {
-			return json.RawMessage(b)
-		}
-		return json.RawMessage(compact.Bytes())
-	default:
-		return val
-	}
 }
