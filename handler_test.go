@@ -606,6 +606,135 @@ func TestHandler(t *testing.T) {
 			assert.Contains(t, buffer.String(), `"type":"mine"`)
 			assert.NotContains(t, buffer.String(), `"type_"`)
 		})
+
+		t.Run("request ID alone reserves record", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion("")))
+
+			logger.InfoContext(ctx, "hi", "record", 1)
+			logger.Info("hi", "record", 1)
+
+			assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log","record":{"requestId":"abc-123"},"record_":1}`+"\n"+
+				`{"level":"INFO","msg":"hi","type":"app.log","record":1}`+"\n", buffer.String())
+		})
+
+		t.Run("WithAttrs and record keys share the fallback space", func(t *testing.T) {
+			tests := []struct {
+				name string
+				log  func(*slog.Logger)
+				want string
+			}{
+				{"chain type_ then record type", func(l *slog.Logger) { l.With("type_", 1).Info("hi", "type", 2) }, `"type_":1,"type__":2}`},
+				{"chain type then record type_", func(l *slog.Logger) { l.With("type", 1).Info("hi", "type_", 2) }, `"type__":1,"type_":2}`},
+				{"chain inline group record", func(l *slog.Logger) { l.With(slog.Group("", "record", 1)).Info("hi") }, `"record_":1}`},
+				{"chain record then WithGroup", func(l *slog.Logger) { l.With("record", 1).WithGroup("g").Info("hi", "b", 2) }, `"record_":1,"g":{"b":2}}`},
+				{"nested chain record is untouched", func(l *slog.Logger) { l.With(slog.Group("x", "record", 1)).Info("hi") }, `"x":{"record":1}}`},
+			}
+
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime())))
+
+					assert.True(t, strings.HasSuffix(buffer.String(), tt.want+"\n"), buffer.String())
+				})
+			}
+		})
+	})
+
+	t.Run("given a WithAttrs and WithGroup chain", func(t *testing.T) {
+		tests := []struct {
+			name string
+			log  func(*slog.Logger)
+			json string
+			text string
+		}{
+			{
+				"pending group with no record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").Info("hi") },
+				``, ``,
+			},
+			{
+				"open group then pending group with no record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").With("a", 1).WithGroup("h").Info("hi") },
+				`,"g":{"a":1}`, ` g.a=1`,
+			},
+			{
+				"open group then pending group with record attrs",
+				func(l *slog.Logger) { l.WithGroup("g").With("a", 1).WithGroup("h").Info("hi", "b", 2) },
+				`,"g":{"a":1,"h":{"b":2}}`, ` g.a=1 g.h.b=2`,
+			},
+			{
+				"attrs then pending group with no record attrs",
+				func(l *slog.Logger) { l.With("a", 1).WithGroup("g").Info("hi") },
+				`,"a":1`, ` a=1`,
+			},
+			{
+				"nested pending groups",
+				func(l *slog.Logger) { l.WithGroup("g").WithGroup("h").Info("hi", "b", 2) },
+				`,"g":{"h":{"b":2}}`, ` g.h.b=2`,
+			},
+			{
+				"nested pending groups with only an empty record group",
+				func(l *slog.Logger) { l.WithGroup("g").WithGroup("h").Info("hi", slog.Group("x")) },
+				``, ``,
+			},
+			{
+				"group name needing quotes",
+				func(l *slog.Logger) { l.WithGroup("g h").With("a", 1).Info("hi", "b", 2) },
+				`,"g h":{"a":1,"b":2}`, ` "g h.a"=1 "g h.b"=2`,
+			},
+			{
+				"WithAttrs of only empty groups does not open pending groups",
+				func(l *slog.Logger) { l.With(slog.Group("z")).WithGroup("g").Info("hi", "b", 2) },
+				`,"g":{"b":2}`, ` g.b=2`,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Run("JSON", func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion(""))))
+
+					assert.Equal(t, `{"level":"INFO","msg":"hi","type":"app.log"`+tt.json+"}\n", buffer.String())
+				})
+
+				t.Run("Text", func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					tt.log(slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion(""))))
+
+					assert.Equal(t, `level="INFO" msg="hi" type="app.log"`+tt.text+"\n", buffer.String())
+				})
+			})
+		}
+
+		t.Run("LogValuers resolve once in WithAttrs", func(t *testing.T) {
+			for _, format := range []struct {
+				name string
+				opt  sloglambda.Option
+			}{{"JSON", sloglambda.WithJSON()}, {"Text", sloglambda.WithText()}} {
+				t.Run(format.name, func(t *testing.T) {
+					buffer := new(bytes.Buffer)
+					named := &countingValuer{}
+					unnamed := &countingValuer{}
+					nested := &countingValuer{}
+					logger := slog.New(sloglambda.NewHandler(buffer, format.opt, sloglambda.WithoutTime())).
+						With(slog.Any("named", named), slog.Any("", unnamed), slog.Group("g", slog.Any("nested", nested)))
+
+					logger.Info("one")
+					logger.Info("two")
+					logger.Info("three", "type", "a")
+
+					assert.Equal(t, 1, named.calls)
+					assert.Equal(t, 1, unnamed.calls)
+					assert.Equal(t, 1, nested.calls)
+					assert.Equal(t, 9, strings.Count(buffer.String(), "first"))
+					assert.NotContains(t, buffer.String(), "type_=2")
+					assert.NotContains(t, buffer.String(), `"type_":2`)
+				})
+			}
+		})
 	})
 
 	t.Run("given a typed nil Stringer", func(t *testing.T) {

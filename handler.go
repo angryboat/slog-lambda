@@ -67,6 +67,7 @@ type Handler struct {
 	source      bool
 	excludeTime bool
 	gattr       []groupOrAttrs
+	pre         *preformatted // nil once a top-level key may collide with a reserved key
 
 	functionName    string
 	functionVersion string
@@ -151,6 +152,7 @@ func NewHandler(w io.Writer, options ...Option) *Handler {
 	h := &Handler{
 		out:             w,
 		mu:              new(sync.Mutex),
+		pre:             &preformatted{sep: true},
 		level:           loggerLevelFromLambdaEnv(),
 		json:            loggerIsJSON(),
 		source:          false,
@@ -220,18 +222,27 @@ func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.level.Level()
 }
 
-func (h *Handler) WithAttrs(attr []slog.Attr) slog.Handler {
-	if len(attr) == 0 {
+func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
 		return h
 	}
-	return h.copy(groupOrAttrs{attrs: attr})
+	attrs = resolveAttrs(attrs)
+	c := h.copy(groupOrAttrs{attrs: attrs})
+	if c.pre != nil {
+		c.pre = c.preformatAttrs(attrs)
+	}
+	return c
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}
-	return h.copy(groupOrAttrs{group: name})
+	c := h.copy(groupOrAttrs{group: name})
+	if c.pre != nil {
+		c.pre = c.pre.withGroup(name)
+	}
+	return c
 }
 
 func (h *Handler) copy(g groupOrAttrs) *Handler {
@@ -239,7 +250,52 @@ func (h *Handler) copy(g groupOrAttrs) *Handler {
 	c.gattr = make([]groupOrAttrs, len(h.gattr)+1)
 	copy(c.gattr, h.gattr)
 	c.gattr[len(c.gattr)-1] = g
+	if c.pre != nil && len(c.pre.groups) == 0 && c.mayCollide(g) {
+		c.pre = nil
+	}
 	return &c
+}
+
+// mayCollide reports whether a top-level key in g could need renaming at
+// Handle time. "record" depends on the request context, so it always may.
+func (h *Handler) mayCollide(g groupOrAttrs) bool {
+	if g.group != "" {
+		return h.keyMayCollide(g.group)
+	}
+	for _, a := range g.attrs {
+		if h.attrMayCollide(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) attrMayCollide(a slog.Attr) bool {
+	if a.Key != "" || a.Value.Kind() != slog.KindGroup {
+		return h.keyMayCollide(a.Key)
+	}
+	for _, ga := range a.Value.Group() {
+		if h.attrMayCollide(ga) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) keyMayCollide(key string) bool {
+	return key == kLambdaRecord || (key == kLambdaLogType && h.logType != "")
+}
+
+func resolveAttrs(attrs []slog.Attr) []slog.Attr {
+	resolved := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		a.Value = a.Value.Resolve()
+		if a.Value.Kind() == slog.KindGroup {
+			a.Value = slog.GroupValue(resolveAttrs(a.Value.Group())...)
+		}
+		resolved[i] = a
+	}
+	return resolved
 }
 
 func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
@@ -297,7 +353,11 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		s.closeGroup(g)
 	}
 
-	s.appendGroupsAndAttrs(h.gattr)
+	if h.pre != nil {
+		s.appendPreformatted(h.pre)
+	} else {
+		s.appendGroupsAndAttrs(h.gattr)
+	}
 	s.end()
 
 	h.mu.Lock()
@@ -314,6 +374,49 @@ type groupOrAttrs struct {
 	attrs []slog.Attr // attrs if non-empty
 }
 
+// preformatted is the WithAttrs/WithGroup chain serialized once, the way
+// slog.JSONHandler pre-formats its attrs. Groups opened inside buf are closed
+// by Handle after the record's own attrs; groups[nOpen:] are still pending and
+// only open when the record has attrs to put in them.
+type preformatted struct {
+	buf         []byte
+	sep         bool
+	prefix      []byte
+	prefixQuote bool
+	groups      []string
+	nOpen       int
+}
+
+func (p *preformatted) withGroup(name string) *preformatted {
+	c := *p
+	c.groups = append(p.groups[:len(p.groups):len(p.groups)], name)
+	return &c
+}
+
+func (h *Handler) preformatAttrs(attrs []slog.Attr) *preformatted {
+	p := h.pre
+	s := &handleState{h: h, buf: make([]byte, 0, len(p.buf)+64)}
+	s.loadPreformatted(p)
+
+	s.appendPendingGroups(p.groups[p.nOpen:], func() {
+		for _, a := range attrs {
+			s.appendAttr(a)
+		}
+	}, false)
+
+	if len(s.buf) == len(p.buf) {
+		return p
+	}
+	return &preformatted{
+		buf:         s.buf,
+		sep:         s.sep,
+		prefix:      s.prefix,
+		prefixQuote: s.prefixQuote,
+		groups:      p.groups,
+		nOpen:       len(p.groups),
+	}
+}
+
 type handleState struct {
 	h      *Handler
 	record slog.Record
@@ -327,8 +430,8 @@ type handleState struct {
 	hasRecord bool
 	taken     map[string]bool
 
-	topIndex int
-	resolved map[int]slog.Value
+	recordIndex int
+	resolved    map[int]slog.Value
 }
 
 type groupMark struct {
@@ -375,6 +478,39 @@ func (s *handleState) end() {
 	s.buf = append(s.buf, '\n')
 }
 
+func (s *handleState) loadPreformatted(p *preformatted) {
+	s.buf = append(s.buf, p.buf...)
+	s.sep = p.sep
+	s.prefix = append(s.prefix[:0], p.prefix...)
+	s.prefixQuote = p.prefixQuote
+	s.depth = p.nOpen
+}
+
+func (s *handleState) appendPreformatted(p *preformatted) {
+	s.loadPreformatted(p)
+	s.appendPendingGroups(p.groups[p.nOpen:], s.appendRecordAttrs, true)
+	if s.h.json {
+		for range p.nOpen {
+			s.buf = append(s.buf, '}')
+		}
+	}
+}
+
+// appendPendingGroups opens each group, runs body inside the innermost one,
+// then either closes the groups or leaves them open for a later Handle to
+// close. Groups nothing was written into are dropped either way.
+func (s *handleState) appendPendingGroups(groups []string, body func(), close bool) {
+	if len(groups) == 0 {
+		body()
+		return
+	}
+	g := s.openGroup(groups[0])
+	s.appendPendingGroups(groups[1:], body, close)
+	if close || len(s.buf) == g.opened {
+		s.closeGroup(g)
+	}
+}
+
 func (s *handleState) appendGroupsAndAttrs(gattr []groupOrAttrs) {
 	for i, ga := range gattr {
 		if ga.group != "" {
@@ -387,7 +523,11 @@ func (s *handleState) appendGroupsAndAttrs(gattr []groupOrAttrs) {
 			s.appendAttr(a)
 		}
 	}
+	s.appendRecordAttrs()
+}
 
+func (s *handleState) appendRecordAttrs() {
+	s.recordIndex = 0
 	s.record.Attrs(func(a slog.Attr) bool {
 		s.appendAttr(a)
 		return true
@@ -396,12 +536,12 @@ func (s *handleState) appendGroupsAndAttrs(gattr []groupOrAttrs) {
 
 func (s *handleState) appendAttr(a slog.Attr) {
 	if s.depth == 0 && a.Key == "" {
-		a.Value = s.resolveUnnamed(s.topIndex, a.Value)
+		a.Value = s.resolveUnnamed(s.recordIndex, a.Value)
 	} else {
 		a.Value = a.Value.Resolve()
 	}
 	if s.depth == 0 {
-		s.topIndex++
+		s.recordIndex++
 	}
 	if a.Equal(slog.Attr{}) {
 		return
@@ -510,6 +650,7 @@ func (s *handleState) topLevelUserKeys() map[string]bool {
 		}
 	}
 
+	index = 0
 	s.record.Attrs(func(a slog.Attr) bool {
 		s.addTopLevelKey(keys, a, &index)
 		return true
@@ -517,8 +658,9 @@ func (s *handleState) topLevelUserKeys() map[string]bool {
 	return keys
 }
 
-// addTopLevelKey walks attrs in the same order as appendAttr at depth 0, so
-// index lines up with topIndex and unnamed LogValuers resolve only once.
+// addTopLevelKey walks record attrs in the same order as appendAttr at depth
+// 0, so index lines up with recordIndex and unnamed LogValuers resolve only
+// once. Chain attrs were resolved in WithAttrs, so their index is irrelevant.
 func (s *handleState) addTopLevelKey(keys map[string]bool, a slog.Attr, index *int) {
 	i := *index
 	*index++
