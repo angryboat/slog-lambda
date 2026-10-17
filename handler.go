@@ -352,7 +352,7 @@ func newHandleState(h *Handler, record slog.Record) *handleState {
 }
 
 func (s *handleState) free() {
-	if cap(s.buf) > maxPooledBufferSize {
+	if cap(s.buf) > maxPooledBufferSize || cap(s.prefix) > maxPooledBufferSize {
 		return
 	}
 	*s = handleState{buf: s.buf[:0], prefix: s.prefix[:0]}

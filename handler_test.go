@@ -584,6 +584,36 @@ func TestHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("given oversized records", func(t *testing.T) {
+		big := strings.Repeat("a", 20<<10)
+
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.Info(big, "m", map[string]string{"k": big})
+			logger.Info("small")
+
+			lines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+			require.Len(t, lines, 2)
+			assert.Contains(t, lines[0], `"m":{"k":"`+big+`"}`)
+			assert.True(t, strings.HasPrefix(lines[1], `{"level":"INFO","msg":"small"`), lines[1])
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+			logger.Info("hi", slog.Group(big, "x", 1))
+			logger.Info("small", "y", 2)
+
+			lines := strings.Split(strings.TrimSuffix(buffer.String(), "\n"), "\n")
+			require.Len(t, lines, 2)
+			assert.True(t, strings.HasSuffix(lines[0], " "+big+".x=1"), "missing big group key")
+			assert.True(t, strings.HasSuffix(lines[1], " y=2"), lines[1])
+		})
+	})
+
 	t.Run("given a failing writer", func(t *testing.T) {
 		t.Run("JSON", func(t *testing.T) {
 			handler := sloglambda.NewHandler(failingWriter{}, sloglambda.WithJSON())
