@@ -30,7 +30,7 @@ Key design decisions:
 - **Functional options pattern** - `Option` type (`func(*Handler)`) for configuration: `WithJSON()`, `WithText()`, `WithLevel()`, `WithSource()`, `WithType()`, `WithoutTime()`
 - **Environment auto-detection** - `NewHandler` reads `AWS_LAMBDA_LOG_LEVEL` and `AWS_LAMBDA_LOG_FORMAT` at construction time; options override env values. Unknown level strings fall back to INFO; anything other than `json` (case-insensitive) is text
 - **Custom level mapping** - TRACE = `slog.LevelDebug - 4`, FATAL = `slog.LevelError + 4`; `lambdaLoggerLevelString` renders these back for output, with `+N`/`-N` suffixes for in-between levels
-- **`WithAttrs`/`WithGroup`** - `copy()` appends a `groupOrAttrs` entry to an immutable chain; `Handle()` drops trailing empty groups when the record has no attrs (slogtest requires this)
+- **`WithAttrs`/`WithGroup`** - `copy()` appends a `groupOrAttrs` entry to an immutable chain; empty groups (including nested ones) are removed by `logRecord.clean()` (slogtest requires this)
 - **`logRecord` (map[string]any)** - Internal representation built in `Handle()`, supports nested groups; `clean()` removes empty sub-records before serialization
 - **Value normalization** - `normalizeValue` resolves `slog.LogValuer` and converts typed values (times to RFC3339Nano, durations to strings); `normalizeAnyValue` handles `error` and `json.Marshaler`
 - **JSON encode fallback** - If encoding fails, `replaceUnencodable()` swaps bad values for `!ERROR:<msg>` strings and retries. If that still fails, `writeJSONFallback` emits a minimal ERROR line and returns the joined errors. Never drop a log record
