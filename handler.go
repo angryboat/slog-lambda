@@ -69,8 +69,12 @@ type Handler struct {
 type Option func(*Handler)
 
 // WithLevel sets the minimum log level. Messages below this level are dropped.
-// Defaults to the value of AWS_LAMBDA_LOG_LEVEL, or INFO if unset.
+// Defaults to the value of AWS_LAMBDA_LOG_LEVEL, or INFO if unset. A nil
+// level means INFO, matching [slog.HandlerOptions].
 func WithLevel(level slog.Leveler) Option {
+	if level == nil {
+		level = slog.LevelInfo
+	}
 	return func(h *Handler) {
 		h.level = level
 	}
