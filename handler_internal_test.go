@@ -157,6 +157,59 @@ func Test_writeTextRecord(t *testing.T) {
 
 		assert.Equal(t, `foo={"a":1} `, buffer.String())
 	})
+
+	t.Run("when the record contains a struct", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		writeTextRecord(buffer, logRecord{"foo": struct {
+			A string
+			B int
+		}{"x y", 1}}, "")
+
+		assert.Equal(t, `foo="{x y 1}" `, buffer.String())
+	})
+
+	t.Run("when a key contains a space", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		writeTextRecord(buffer, logRecord{"a b": 1}, "")
+
+		assert.Equal(t, `"a b"=1 `, buffer.String())
+	})
+
+	t.Run("when a key contains an equals sign", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		writeTextRecord(buffer, logRecord{"a=c": 1}, "")
+
+		assert.Equal(t, `"a=c"=1 `, buffer.String())
+	})
+
+	t.Run("when a nested key needs quoting", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		writeTextRecord(buffer, logRecord{"b c": "d"}, "a")
+
+		assert.Equal(t, `"a.b c"="d" `, buffer.String())
+	})
+}
+
+func Test_textNeedsQuoting(t *testing.T) {
+	cases := map[string]bool{
+		"":           true,
+		"plain":      false,
+		"a.b_c-1":    false,
+		`back\slash`: false,
+		"a b":        true,
+		"a=b":        true,
+		`a"b`:        true,
+		"a\nb":       true,
+		"a\tb":       true,
+		"a\x7fb":     true,
+		"\xff":       true,
+		"héllo":      false,
+		"a\u00a0b":   true,
+	}
+
+	for input, want := range cases {
+		assert.Equal(t, want, textNeedsQuoting(input), "input %q", input)
+	}
 }
 
 type stringerValue struct{}

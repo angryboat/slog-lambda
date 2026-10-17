@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aws/aws-lambda-go/lambdacontext"
 )
@@ -441,7 +443,7 @@ func writeTextRecord(w io.Writer, record logRecord, path string) {
 		}
 
 		if _, ok := value.(logRecord); !ok {
-			w.Write([]byte(key))
+			w.Write([]byte(quoteTextIfNeeded(key)))
 			w.Write([]byte("="))
 		}
 
@@ -453,13 +455,42 @@ func writeTextRecord(w io.Writer, record logRecord, path string) {
 		case json.RawMessage:
 			w.Write(v)
 		default:
-			fmt.Fprintf(w, "%v", v)
+			w.Write([]byte(quoteTextIfNeeded(fmt.Sprintf("%v", v))))
 		}
 
 		if _, ok := value.(logRecord); !ok {
 			w.Write([]byte(" "))
 		}
 	}
+}
+
+func quoteTextIfNeeded(s string) string {
+	if textNeedsQuoting(s) {
+		return strconv.Quote(s)
+	}
+	return s
+}
+
+func textNeedsQuoting(s string) bool {
+	if len(s) == 0 {
+		return true
+	}
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < utf8.RuneSelf {
+			if b == ' ' || b == '=' || b == '"' || b < 0x20 || b == 0x7f {
+				return true
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError || unicode.IsSpace(r) || !unicode.IsPrint(r) {
+			return true
+		}
+		i += size
+	}
+	return false
 }
 
 func normalizeValue(v slog.Value) any {
