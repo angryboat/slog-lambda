@@ -150,6 +150,56 @@ func TestHandler(t *testing.T) {
 		})
 	})
 
+	t.Run("WithFunctionName and WithFunctionVersion", func(t *testing.T) {
+		t.Run("JSON", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithFunctionName("custom-function"), sloglambda.WithFunctionVersion("42")))
+
+			logger.Info(t.Name())
+
+			assert.Contains(t, buffer.String(), `"record":{"functionName":"custom-function","version":"42"}`)
+		})
+
+		t.Run("Text", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithFunctionName("custom-function"), sloglambda.WithFunctionVersion("42")))
+
+			logger.Info(t.Name())
+
+			assert.Contains(t, buffer.String(), `record.functionName="custom-function" record.version="42"`)
+		})
+
+		t.Run("empty values omit record", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithFunctionName(""), sloglambda.WithFunctionVersion("")))
+
+			logger.Info(t.Name())
+
+			assert.NotContains(t, buffer.String(), `"record"`)
+		})
+
+		t.Run("carried through WithAttrs and WithGroup", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithFunctionName("custom-function"), sloglambda.WithFunctionVersion("42")))
+
+			logger.With("a", 1).WithGroup("g").Info(t.Name(), "b", 2)
+
+			assert.Contains(t, buffer.String(), `"record":{"functionName":"custom-function","version":"42"}`)
+		})
+	})
+
+	t.Run("env is read once at construction", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON()))
+
+		t.Setenv("AWS_LAMBDA_FUNCTION_NAME", "changed")
+		t.Setenv("AWS_LAMBDA_FUNCTION_VERSION", "changed")
+
+		logger.Info(t.Name())
+
+		assert.Contains(t, buffer.String(), `"record":{"functionName":"test-function","version":"$LATEST"}`)
+	})
+
 	t.Run("given a lambda context", func(t *testing.T) {
 		ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
 			AwsRequestID: "abc-123",

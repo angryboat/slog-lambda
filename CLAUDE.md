@@ -27,7 +27,7 @@ A Go `slog.Handler` for AWS Lambda functions that auto-configures log format (JS
 Single-file handler in `handler.go`. The `Handler` struct implements `slog.Handler` and writes to an `io.Writer`.
 
 Key design decisions:
-- **Functional options pattern** - `Option` type (`func(*Handler)`) for configuration: `WithJSON()`, `WithText()`, `WithLevel()`, `WithSource()`, `WithType()`, `WithoutTime()`
+- **Functional options pattern** - `Option` type (`func(*Handler)`) for configuration: `WithJSON()`, `WithText()`, `WithLevel()`, `WithSource()`, `WithType()`, `WithFunctionName()`, `WithFunctionVersion()`, `WithoutTime()`
 - **Environment auto-detection** - `NewHandler` reads `AWS_LAMBDA_LOG_LEVEL` and `AWS_LAMBDA_LOG_FORMAT` at construction time; options override env values. Unknown level strings fall back to INFO; anything other than `json` (case-insensitive) is text
 - **Custom level mapping** - TRACE = `slog.LevelDebug - 4`, FATAL = `slog.LevelError + 4`; `lambdaLoggerLevelString` renders these back for output, with `+N`/`-N` suffixes for in-between levels
 - **`WithAttrs`/`WithGroup`** - `copy()` appends a `groupOrAttrs` entry to an immutable chain; empty groups (including nested ones) are removed by `logRecord.clean()` (slogtest requires this)
@@ -36,7 +36,7 @@ Key design decisions:
 - **JSON encode fallback** - If encoding fails, `replaceUnencodable()` swaps bad values for `!ERROR:<msg>` strings and retries. If that still fails, `writeJSONFallback` emits a minimal ERROR line and returns the joined errors. Never drop a log record
 - **Text output** - `writeTextRecord` sorts keys and flattens groups into dotted paths (`record.functionName="..."`); strings are quoted with `strconv.Quote`
 - **Buffer pooling** - `sync.Pool` with 1KB initial alloc, 16KB max retention
-- **Lambda metadata** - Injects function name, version from env, and request ID from `lambdacontext` into a `record` group; `type` field (default `app.log`) added at top level
+- **Lambda metadata** - Injects function name and version (read from env once in `NewHandler`, overridable via `WithFunctionName()`/`WithFunctionVersion()`) and request ID from `lambdacontext` into a `record` group; `type` field (default `app.log`) added at top level
 - **Reserved keys** - `record` and `type` are written after user attrs via `logRecord.reserve`; a colliding top-level user value moves to the first unused `record_`/`type_`/`type__`... key instead of being dropped
 - **Locking** - `mu` is a `*sync.Mutex` shared across `copy()`-derived handlers so all writers to the same `io.Writer` serialize
 
