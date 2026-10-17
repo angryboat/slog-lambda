@@ -60,6 +60,9 @@ type Handler struct {
 	source      bool
 	excludeTime bool
 	gattr       []groupOrAttrs
+
+	functionName    string
+	functionVersion string
 }
 
 // Option configures a [Handler]. Pass options to [NewHandler].
@@ -102,6 +105,23 @@ func WithType(logType string) Option {
 	}
 }
 
+// WithFunctionName sets the function name included in the "record" field.
+// Defaults to the value of AWS_LAMBDA_FUNCTION_NAME. An empty name omits it.
+func WithFunctionName(name string) Option {
+	return func(h *Handler) {
+		h.functionName = name
+	}
+}
+
+// WithFunctionVersion sets the function version included in the "record"
+// field. Defaults to the value of AWS_LAMBDA_FUNCTION_VERSION. An empty version
+// omits it.
+func WithFunctionVersion(version string) Option {
+	return func(h *Handler) {
+		h.functionVersion = version
+	}
+}
+
 // WithoutTime omits the timestamp from log output. Useful for testing or when
 // CloudWatch already provides timestamps.
 func WithoutTime() Option {
@@ -113,16 +133,19 @@ func WithoutTime() Option {
 // NewHandler returns a [Handler] that writes to w.
 //
 // By default it reads AWS_LAMBDA_LOG_LEVEL (TRACE, DEBUG, INFO, WARN, ERROR,
-// FATAL) and AWS_LAMBDA_LOG_FORMAT (json, text) from the environment. Any
+// FATAL), AWS_LAMBDA_LOG_FORMAT (json, text), AWS_LAMBDA_FUNCTION_NAME, and
+// AWS_LAMBDA_FUNCTION_VERSION from the environment once, at construction. Any
 // provided options take precedence over environment values.
 func NewHandler(w io.Writer, options ...Option) *Handler {
 	h := &Handler{
-		out:     w,
-		mu:      new(sync.Mutex),
-		level:   loggerLevelFromLambdaEnv(),
-		json:    loggerIsJSON(),
-		source:  false,
-		logType: "app.log",
+		out:             w,
+		mu:              new(sync.Mutex),
+		level:           loggerLevelFromLambdaEnv(),
+		json:            loggerIsJSON(),
+		source:          false,
+		logType:         "app.log",
+		functionName:    os.Getenv(lambdaEnvFunctionName),
+		functionVersion: os.Getenv(lambdaEnvFunctionVersion),
 	}
 
 	for _, opt := range options {
@@ -249,11 +272,11 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 	})
 
 	lambdaGroup := make(logRecord, 3)
-	if value, ok := os.LookupEnv(lambdaEnvFunctionName); ok {
-		lambdaGroup.append(slog.String(kLambdaFunctionName, value))
+	if h.functionName != "" {
+		lambdaGroup.append(slog.String(kLambdaFunctionName, h.functionName))
 	}
-	if value, ok := os.LookupEnv(lambdaEnvFunctionVersion); ok {
-		lambdaGroup.append(slog.String(kLambdaFunctionVersion, value))
+	if h.functionVersion != "" {
+		lambdaGroup.append(slog.String(kLambdaFunctionVersion, h.functionVersion))
 	}
 
 	if lc, _ := lambdacontext.FromContext(ctx); lc != nil {
