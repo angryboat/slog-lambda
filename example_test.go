@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 
-	sloglambda "github.com/maddiesch/slog-lambda"
+	sloglambda "github.com/angryboat/slog-lambda"
 )
 
 func ExampleWithJSON() {
