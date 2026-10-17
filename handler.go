@@ -15,6 +15,21 @@
 // handler's value wins and the caller's value moves to the first unused key
 // formed by appending underscores ("record_", "type_", "type__", ...).
 //
+// The rename is best-effort and has a few edge cases:
+//
+//   - Two attrs with the same reserved key in one record both move to the
+//     same fallback key, so the output contains that key twice. This matches
+//     [slog.JSONHandler], which also writes duplicate keys as given.
+//   - A top-level attr whose value is a [slog.LogValuer] counts as taken even
+//     if it resolves to an empty group and is never written, so the fallback
+//     may skip a key that ends up unused.
+//   - In text output, groups flatten into dotted keys, so a user key that
+//     already contains a dot ("record.requestId") is not renamed and lands in
+//     the same namespace as the handler's fields.
+//   - "time", "level", "msg", and "source" are not reserved. A user attr with
+//     one of those keys is written in addition to the built-in field, as
+//     [slog.JSONHandler] does.
+//
 // See https://docs.aws.amazon.com/lambda/latest/dg/monitoring-logs.html
 package sloglambda
 
