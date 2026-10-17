@@ -212,6 +212,100 @@ func TestHandler(t *testing.T) {
 		})
 	})
 
+	t.Run("given reserved keys", func(t *testing.T) {
+		ctx := lambdacontext.NewContext(context.Background(), &lambdacontext.LambdaContext{
+			AwsRequestID: "abc-123",
+		})
+
+		t.Run("WithGroup record", func(t *testing.T) {
+			t.Run("JSON", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
+
+				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST","requestId":"abc-123"},"record_":{"x":1},"type":"app.log"}`, buffer.String())
+			})
+
+			t.Run("Text", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+				logger.WithGroup("record").InfoContext(ctx, "hi", "x", 1)
+
+				assert.Equal(t, `level="INFO" msg="hi" record.functionName="test-function" record.requestId="abc-123" record.version="$LATEST" record_.x=1 type="app.log"`+"\n", buffer.String())
+			})
+		})
+
+		t.Run("attr type", func(t *testing.T) {
+			t.Run("JSON", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "nope")
+
+				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"nope"}`, buffer.String())
+			})
+
+			t.Run("Text", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "nope")
+
+				assert.Contains(t, buffer.String(), `type="app.log" type_="nope"`)
+			})
+		})
+
+		t.Run("attr type and type_", func(t *testing.T) {
+			t.Run("JSON", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "a", "type_", "b")
+
+				assert.JSONEq(t, `{"level":"INFO","msg":"hi","record":{"functionName":"test-function","version":"$LATEST"},"type":"app.log","type_":"b","type__":"a"}`, buffer.String())
+			})
+
+			t.Run("Text", func(t *testing.T) {
+				buffer := new(bytes.Buffer)
+				logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText(), sloglambda.WithoutTime()))
+
+				logger.Info("hi", "type", "a", "type_", "b")
+
+				assert.Contains(t, buffer.String(), `type="app.log" type_="b" type__="a"`)
+			})
+		})
+
+		t.Run("WithAttrs type", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.With("type", "nope").Info("hi")
+
+			assert.Contains(t, buffer.String(), `"type":"app.log","type_":"nope"`)
+		})
+
+		t.Run("nested group keys are untouched", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithoutTime()))
+
+			logger.WithGroup("g").Info("hi", "type", "nope", slog.Group("record", "x", 1))
+
+			assert.Contains(t, buffer.String(), `"g":{"record":{"x":1},"type":"nope"}`)
+		})
+
+		t.Run("empty WithType leaves type alone", func(t *testing.T) {
+			buffer := new(bytes.Buffer)
+			logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithJSON(), sloglambda.WithType("")))
+
+			logger.Info("hi", "type", "mine")
+
+			assert.Contains(t, buffer.String(), `"type":"mine"`)
+			assert.NotContains(t, buffer.String(), `"type_"`)
+		})
+	})
+
 	t.Run("given a typed nil Stringer", func(t *testing.T) {
 		buffer := new(bytes.Buffer)
 		logger := slog.New(sloglambda.NewHandler(buffer, sloglambda.WithText()))
