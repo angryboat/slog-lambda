@@ -141,6 +141,13 @@ func Test_writeTextRecord(t *testing.T) {
 
 		assert.Equal(t, `foo.bar.baz=1 `, buffer.String())
 	})
+
+	t.Run("when the record contains raw JSON", func(t *testing.T) {
+		buffer := new(bytes.Buffer)
+		writeTextRecord(buffer, logRecord{"foo": json.RawMessage(`{"a":1}`)}, "")
+
+		assert.Equal(t, `foo={"a":1} `, buffer.String())
+	})
 }
 
 type stringerValue struct{}
@@ -185,7 +192,7 @@ func Test_normalizeValue(t *testing.T) {
 			t.Run("success", func(t *testing.T) {
 				v := slog.AnyValue(jsonMarshalerSuccess{})
 
-				assert.Equal(t, `"JSON Marshal"`, normalizeValue(v))
+				assert.Equal(t, json.RawMessage(`"JSON Marshal"`), normalizeValue(v))
 			})
 
 			t.Run("failure", func(t *testing.T) {

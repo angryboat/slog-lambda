@@ -414,6 +414,8 @@ func writeTextRecord(w io.Writer, record logRecord, path string) {
 			writeTextRecord(w, v, key)
 		case string:
 			w.Write([]byte(strconv.Quote(v)))
+		case json.RawMessage:
+			w.Write(v)
 		case fmt.Stringer:
 			// This is here because nilaway can't figure out that v is not nil
 			if v != nil {
@@ -473,7 +475,7 @@ func normalizeAnyValue(val any) any {
 		if err != nil {
 			return err.Error()
 		}
-		return string(b)
+		return json.RawMessage(b)
 	default:
 		return val
 	}
