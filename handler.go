@@ -326,6 +326,9 @@ type handleState struct {
 
 	hasRecord bool
 	taken     map[string]bool
+
+	topIndex int
+	resolved map[int]slog.Value
 }
 
 type groupMark struct {
@@ -392,7 +395,14 @@ func (s *handleState) appendGroupsAndAttrs(gattr []groupOrAttrs) {
 }
 
 func (s *handleState) appendAttr(a slog.Attr) {
-	a.Value = a.Value.Resolve()
+	if s.depth == 0 && a.Key == "" {
+		a.Value = s.resolveUnnamed(s.topIndex, a.Value)
+	} else {
+		a.Value = a.Value.Resolve()
+	}
+	if s.depth == 0 {
+		s.topIndex++
+	}
 	if a.Equal(slog.Attr{}) {
 		return
 	}
@@ -486,35 +496,95 @@ func (s *handleState) isReserved(key string) bool {
 
 func (s *handleState) topLevelUserKeys() map[string]bool {
 	keys := make(map[string]bool)
+	var index int
 
-	for _, ga := range s.h.gattr {
+	for i, ga := range s.h.gattr {
 		if ga.group != "" {
-			keys[ga.group] = true
+			if s.anyEmits(s.h.gattr[i+1:]) {
+				keys[ga.group] = true
+			}
 			return keys
 		}
 		for _, a := range ga.attrs {
-			addTopLevelKey(keys, a)
+			s.addTopLevelKey(keys, a, &index)
 		}
 	}
 
 	s.record.Attrs(func(a slog.Attr) bool {
-		addTopLevelKey(keys, a)
+		s.addTopLevelKey(keys, a, &index)
 		return true
 	})
 	return keys
 }
 
-func addTopLevelKey(keys map[string]bool, a slog.Attr) {
+// addTopLevelKey walks attrs in the same order as appendAttr at depth 0, so
+// index lines up with topIndex and unnamed LogValuers resolve only once.
+func (s *handleState) addTopLevelKey(keys map[string]bool, a slog.Attr, index *int) {
+	i := *index
+	*index++
+
 	if a.Key != "" {
-		keys[a.Key] = true
+		if emits(a.Value) {
+			keys[a.Key] = true
+		}
 		return
 	}
 
-	if v := a.Value.Resolve(); v.Kind() == slog.KindGroup {
+	if v := s.resolveUnnamed(i, a.Value); v.Kind() == slog.KindGroup {
 		for _, ga := range v.Group() {
-			addTopLevelKey(keys, ga)
+			s.addTopLevelKey(keys, ga, index)
 		}
 	}
+}
+
+func (s *handleState) resolveUnnamed(index int, v slog.Value) slog.Value {
+	if v.Kind() != slog.KindLogValuer {
+		return v
+	}
+	if r, ok := s.resolved[index]; ok {
+		return r
+	}
+	r := v.Resolve()
+	if s.resolved == nil {
+		s.resolved = make(map[int]slog.Value)
+	}
+	s.resolved[index] = r
+	return r
+}
+
+func (s *handleState) anyEmits(gattr []groupOrAttrs) bool {
+	for _, ga := range gattr {
+		for _, a := range ga.attrs {
+			if attrEmits(a) {
+				return true
+			}
+		}
+	}
+
+	found := false
+	s.record.Attrs(func(a slog.Attr) bool {
+		found = attrEmits(a)
+		return !found
+	})
+	return found
+}
+
+// emits reports whether v would write anything. LogValuers are assumed to,
+// since resolving them here would resolve them twice.
+func emits(v slog.Value) bool {
+	if v.Kind() != slog.KindGroup {
+		return true
+	}
+	for _, a := range v.Group() {
+		if attrEmits(a) {
+			return true
+		}
+	}
+	return false
+}
+
+func attrEmits(a slog.Attr) bool {
+	return !a.Equal(slog.Attr{}) && emits(a.Value)
 }
 
 func (s *handleState) appendKey(key string) {
