@@ -201,6 +201,7 @@ func Test_textNeedsQuoting(t *testing.T) {
 		`a"b`:        true,
 		"a\nb":       true,
 		"a\tb":       true,
+		"a\x7fb":     true,
 		"\xff":       true,
 		"héllo":      false,
 		"a\u00a0b":   true,

@@ -474,7 +474,7 @@ func textNeedsQuoting(s string) bool {
 	for i := 0; i < len(s); {
 		b := s[i]
 		if b < utf8.RuneSelf {
-			if b == ' ' || b == '=' || b == '"' || b < 0x20 {
+			if b == ' ' || b == '=' || b == '"' || b < 0x20 || b == 0x7f {
 				return true
 			}
 			i++
