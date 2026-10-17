@@ -13,33 +13,21 @@ jobs:
     strategy:
       matrix:
         go-version: ["1.25", "1.26", "1.27", "stable"]
-        os: ["ubuntu-latest", "windows-latest"]
+        os: ["ubuntu-latest", "ubuntu-26.04-arm"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
       - run: go test -v -race ./... -timeout 2m
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26", "1.27", "stable"]
-        os: ["ubuntu-latest", "windows-latest"]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ${{ matrix.go-version }}
-      - run: go build ./...
   coverage:
     runs-on: ubuntu-latest
-    needs: [test, build]
+    needs: [test]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
       - run: go test -coverprofile=coverage.txt ./... -timeout 2m
       - uses: codecov/codecov-action@v7
         with:
