@@ -3,6 +3,12 @@
 // It auto-configures log format (JSON or text) and level from Lambda's
 // advanced logging environment variables. Options override env values.
 //
+// The handler reserves two top-level keys: "record" (Lambda function name,
+// version, and request ID) and "type" (see [WithType]). When the handler sets
+// one of these and an attr or group uses the same key at the top level, the
+// handler's value wins and the caller's value moves to the first unused key
+// formed by appending underscores ("record_", "type_", "type__", ...).
+//
 // See https://docs.aws.amazon.com/lambda/latest/dg/monitoring-logs.html
 package sloglambda
 
@@ -207,26 +213,6 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		value.append(slog.Time(slog.TimeKey, record.Time))
 	}
 
-	lambdaGroup := make(logRecord, 3)
-	if value, ok := os.LookupEnv(lambdaEnvFunctionName); ok {
-		lambdaGroup.append(slog.String(kLambdaFunctionName, value))
-	}
-	if value, ok := os.LookupEnv(lambdaEnvFunctionVersion); ok {
-		lambdaGroup.append(slog.String(kLambdaFunctionVersion, value))
-	}
-
-	if lc, _ := lambdacontext.FromContext(ctx); lc != nil {
-		lambdaGroup.append(slog.String(kLambdaRequestId, lc.AwsRequestID))
-	}
-
-	if len(lambdaGroup) > 0 {
-		value[kLambdaRecord] = lambdaGroup
-	}
-
-	if h.logType != "" {
-		value[kLambdaLogType] = h.logType
-	}
-
 	if record.PC != 0 && h.source {
 		frames := runtime.CallersFrames([]uintptr{record.PC})
 		frame, _ := frames.Next()
@@ -261,6 +247,26 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		value.append(a)
 		return true
 	})
+
+	lambdaGroup := make(logRecord, 3)
+	if value, ok := os.LookupEnv(lambdaEnvFunctionName); ok {
+		lambdaGroup.append(slog.String(kLambdaFunctionName, value))
+	}
+	if value, ok := os.LookupEnv(lambdaEnvFunctionVersion); ok {
+		lambdaGroup.append(slog.String(kLambdaFunctionVersion, value))
+	}
+
+	if lc, _ := lambdacontext.FromContext(ctx); lc != nil {
+		lambdaGroup.append(slog.String(kLambdaRequestId, lc.AwsRequestID))
+	}
+
+	if len(lambdaGroup) > 0 {
+		topLevel.reserve(kLambdaRecord, lambdaGroup)
+	}
+
+	if h.logType != "" {
+		topLevel.reserve(kLambdaLogType, h.logType)
+	}
 
 	topLevel.clean()
 
@@ -330,6 +336,17 @@ func (r logRecord) append(attr slog.Attr) {
 	} else {
 		r[attr.Key] = normalizeValue(attr.Value)
 	}
+}
+
+func (r logRecord) reserve(key string, value any) {
+	if existing, ok := r[key]; ok {
+		fallback := key + "_"
+		for _, taken := r[fallback]; taken; _, taken = r[fallback] {
+			fallback += "_"
+		}
+		r[fallback] = existing
+	}
+	r[key] = value
 }
 
 func (r logRecord) clean() {
