@@ -558,10 +558,8 @@ func (s *handleState) appendValue(v slog.Value) {
 		s.appendString(v.Duration().String())
 	case slog.KindTime:
 		s.appendTime(v.Time())
-	case slog.KindAny:
-		s.appendAny(v.Any())
 	default:
-		s.appendString(v.String())
+		s.appendAny(v.Any())
 	}
 }
 
